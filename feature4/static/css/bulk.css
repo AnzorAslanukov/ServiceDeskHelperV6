@@ -1,0 +1,923 @@
+/* ══════════════════════════════════════════════════════════════════════
+   Feature #4 — Bulk Assignment Stylesheet
+   Uses CSS variables from the global styles.css for theme support
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── Login Overlay ─────────────────────────────────────────────────── */
+
+.bulk-login-overlay {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+}
+
+.bulk-login-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-md);
+    padding: 2.5rem;
+    max-width: 400px;
+    width: 100%;
+    text-align: center;
+}
+
+.bulk-login-card h2 {
+    margin: 0 0 0.5rem 0;
+    color: var(--text-primary);
+    font-size: 1.5rem;
+}
+
+.bulk-login-card p {
+    margin: 0 0 1.5rem 0;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.bulk-login-card .form-group {
+    margin-bottom: 1.25rem;
+    text-align: left;
+}
+
+.bulk-login-card .form-label {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.bulk-login-card .form-input {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    box-sizing: border-box;
+    transition: border-color var(--transition-speed);
+}
+
+.bulk-login-card .form-input:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.15);
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────── */
+
+.bulk-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.bulk-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.bulk-toolbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.bulk-toolbar .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    white-space: nowrap;
+}
+
+.bulk-toolbar .btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--border-focus);
+}
+
+.bulk-toolbar .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.bulk-toolbar .btn-primary {
+    background: var(--penn-blue);
+    color: var(--text-inverse);
+    border-color: var(--penn-blue);
+}
+
+.bulk-toolbar .btn-primary:hover:not(:disabled) {
+    background: var(--penn-blue-light);
+    border-color: var(--penn-blue-light);
+}
+
+.bulk-toolbar .btn-success {
+    background: var(--status-success);
+    color: #fff;
+    border-color: var(--status-success);
+}
+
+.bulk-toolbar .btn-success:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.bulk-toolbar .btn-warning {
+    background: var(--status-warning);
+    color: #fff;
+    border-color: var(--status-warning);
+}
+
+.bulk-toolbar .btn-warning:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.bulk-batch-size {
+    width: 60px;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+/* ── Status Bar ────────────────────────────────────────────────────── */
+
+.bulk-status-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg-tertiary);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: 1rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    flex-wrap: wrap;
+}
+
+.bulk-status-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+.bulk-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.bulk-status-dot.connected { background: var(--status-success); }
+.bulk-status-dot.disconnected { background: var(--status-error); }
+
+.bulk-user-badge {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* ── Queue Table ───────────────────────────────────────────────────── */
+
+.bulk-queue-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+}
+
+.bulk-queue-card .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+}
+
+.bulk-queue-card .card-header h2 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--text-primary);
+}
+
+.bulk-table-wrapper {
+    overflow-x: auto;
+}
+
+.bulk-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.bulk-table thead th {
+    padding: 0.6rem 0.75rem;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border-bottom: 2px solid var(--border-color);
+    white-space: nowrap;
+    user-select: none;
+}
+
+.bulk-table thead th.col-checkbox {
+    width: 40px;
+    text-align: center;
+}
+
+.bulk-table thead th.col-lock {
+    width: 50px;
+    text-align: center;
+}
+
+.bulk-table tbody td {
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--border-color-light);
+    color: var(--text-primary);
+    vertical-align: top;
+}
+
+.bulk-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+
+.bulk-table tbody tr.locked-by-me {
+    background: rgba(74, 144, 217, 0.08);
+}
+
+.bulk-table tbody tr.locked-by-other {
+    opacity: 0.6;
+}
+
+.bulk-table tbody tr.locked-by-other:hover {
+    opacity: 0.7;
+}
+
+.bulk-table td.col-checkbox,
+.bulk-table td.col-lock {
+    text-align: center;
+    vertical-align: middle;
+}
+
+.bulk-table .ticket-id-cell {
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.bulk-table .ticket-type-badge {
+    display: inline-block;
+    padding: 0.15rem 0.45rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.bulk-table .ticket-type-badge.ir {
+    background: rgba(74, 144, 217, 0.15);
+    color: var(--penn-accent);
+}
+
+.bulk-table .ticket-type-badge.sr {
+    background: rgba(56, 161, 105, 0.15);
+    color: var(--status-success);
+}
+
+.bulk-table .title-cell {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bulk-table .date-cell {
+    white-space: nowrap;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+/* Lock indicators */
+.lock-indicator {
+    font-size: 1rem;
+    cursor: default;
+}
+
+.lock-indicator.unlocked { color: var(--status-success); }
+.lock-indicator.locked-mine { color: var(--penn-accent); }
+.lock-indicator.locked-other { color: var(--status-error); }
+
+/* ── Empty State ───────────────────────────────────────────────────── */
+
+.bulk-empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--text-muted);
+}
+
+.bulk-empty-state .empty-icon {
+    font-size: 2.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.bulk-empty-state .empty-text {
+    font-size: 1rem;
+    margin-bottom: 0.25rem;
+}
+
+.bulk-empty-state .empty-hint {
+    font-size: 0.85rem;
+}
+
+/* ── Loading Spinner ───────────────────────────────────────────────── */
+
+.bulk-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2rem;
+    color: var(--text-secondary);
+}
+
+.bulk-spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--border-color);
+    border-top-color: var(--penn-accent);
+    border-radius: 50%;
+    animation: bulk-spin 0.8s linear infinite;
+}
+
+@keyframes bulk-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ── Streaming Queue Load ──────────────────────────────────────────── */
+
+.bulk-loading-stream {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 1.5rem 2rem;
+    color: var(--text-secondary);
+}
+
+.bulk-loading-stream .bulk-spinner {
+    width: 28px;
+    height: 28px;
+}
+
+.bulk-loading-text {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.bulk-loading-counter {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--penn-accent);
+    font-variant-numeric: tabular-nums;
+}
+
+.bulk-table-streaming {
+    opacity: 0.85;
+}
+
+.bulk-table-streaming tbody tr {
+    animation: bulk-stream-fade-in 0.25s ease-out;
+}
+
+@keyframes bulk-stream-fade-in {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* ── Expand Button & Detail Row ────────────────────────────────────── */
+
+.col-expand {
+    width: 32px;
+    text-align: center;
+}
+
+.bulk-expand-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: var(--text-secondary);
+    transition: all 0.15s;
+}
+
+.bulk-expand-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.bulk-expand-btn.expanded {
+    color: var(--penn-accent);
+}
+
+.bulk-detail-row {
+    background: var(--bg-tertiary) !important;
+}
+
+.bulk-detail-row > td {
+    padding: 0 !important;
+    border-bottom: 1px solid var(--border-color) !important;
+}
+
+.bulk-detail-row:hover {
+    background: var(--bg-tertiary) !important;
+}
+
+.bulk-detail-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 12px 16px;
+}
+
+.bulk-detail-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.bulk-detail-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    letter-spacing: 0.5px;
+}
+
+.bulk-detail-value {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+}
+
+.bulk-detail-description {
+    grid-column: 1 / -1;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.bulk-detail-description .bulk-detail-value {
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+}
+
+/* ── Recommendation Panel ──────────────────────────────────────────── */
+
+.bulk-rec-row {
+    background: var(--bg-tertiary) !important;
+}
+
+.bulk-rec-row td {
+    padding: 0 !important;
+    border-bottom: 2px solid var(--border-color) !important;
+}
+
+.bulk-rec-panel {
+    padding: 1rem 1.25rem;
+}
+
+.bulk-rec-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+
+.bulk-rec-header h4 {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.bulk-rec-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.bulk-rec-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.bulk-rec-field label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.bulk-rec-field .rec-value {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.bulk-rec-field input,
+.bulk-rec-field select {
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
+
+.bulk-rec-field input:focus,
+.bulk-rec-field select:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.15);
+}
+
+.bulk-rec-rationale {
+    margin-top: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius-sm);
+    border: 1px solid var(--border-color-light);
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.bulk-rec-error {
+    padding: 0.5rem 0.75rem;
+    background: rgba(229, 62, 62, 0.1);
+    border: 1px solid rgba(229, 62, 62, 0.3);
+    border-radius: var(--border-radius-sm);
+    color: var(--status-error);
+    font-size: 0.82rem;
+}
+
+.bulk-rec-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.bulk-rec-badge.success {
+    background: rgba(56, 161, 105, 0.15);
+    color: var(--status-success);
+}
+
+.bulk-rec-badge.error {
+    background: rgba(229, 62, 62, 0.15);
+    color: var(--status-error);
+}
+
+/* ── Toast Notifications ───────────────────────────────────────────── */
+
+.bulk-toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+}
+
+.bulk-toast {
+    padding: 0.65rem 1rem;
+    border-radius: var(--border-radius-sm);
+    font-size: 0.85rem;
+    font-weight: 500;
+    box-shadow: var(--shadow-md);
+    pointer-events: auto;
+    animation: bulk-toast-in 0.3s ease-out;
+    max-width: 360px;
+}
+
+.bulk-toast.success {
+    background: var(--status-success);
+    color: #fff;
+}
+
+.bulk-toast.error {
+    background: var(--status-error);
+    color: #fff;
+}
+
+.bulk-toast.info {
+    background: var(--status-info);
+    color: #fff;
+}
+
+.bulk-toast.warning {
+    background: var(--status-warning);
+    color: #fff;
+}
+
+@keyframes bulk-toast-in {
+    from { opacity: 0; transform: translateX(100%); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* ── Settings Panel ────────────────────────────────────────────────── */
+
+.bulk-settings-panel {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+}
+
+.bulk-settings-panel h3 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.bulk-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 0.75rem;
+}
+
+.bulk-settings-grid .form-group {
+    margin: 0;
+}
+
+.bulk-settings-grid .form-label {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.bulk-settings-grid .form-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.2rem;
+}
+
+.bulk-settings-grid .range-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.bulk-settings-grid .range-value {
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    min-width: 2rem;
+    text-align: center;
+}
+
+.bulk-settings-grid .form-range {
+    flex: 1;
+    accent-color: var(--penn-accent);
+}
+
+/* ── Recommendation Progress Indicators ────────────────────────────── */
+
+/* Row waiting for its turn to be processed */
+.bulk-table tbody tr.rec-pending {
+    background: rgba(203, 213, 225, 0.15);
+}
+
+.bulk-table tbody tr.rec-pending .ticket-id-cell {
+    color: var(--text-secondary);
+}
+
+/* Row currently being processed by AI */
+.bulk-table tbody tr.rec-processing {
+    background: rgba(74, 144, 217, 0.12);
+    animation: rec-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes rec-pulse {
+    0%, 100% { background: rgba(74, 144, 217, 0.08); }
+    50% { background: rgba(74, 144, 217, 0.18); }
+}
+
+/* Inline spinner shown in the lock column for the processing ticket */
+.rec-status-indicator {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 4px;
+    font-size: 0.8rem;
+    vertical-align: middle;
+}
+
+.rec-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--penn-accent);
+    border-radius: 50%;
+    animation: bulk-spin 0.8s linear infinite;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+    .bulk-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .bulk-toolbar-right {
+        margin-left: 0;
+    }
+
+    .bulk-rec-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .bulk-settings-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* ── Manual Assignment Form ────────────────────────────────────────── */
+
+.manual-assign-form {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--penn-accent);
+    border-radius: var(--border-radius-sm);
+    border-left: 4px solid var(--penn-accent);
+}
+
+.manual-assign-title {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.manual-assign-fields {
+    display: flex;
+    align-items: flex-end;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.manual-assign-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    min-width: 0;
+}
+
+.manual-assign-field:first-child {
+    flex: 1 1 300px;
+    min-width: 250px;
+}
+
+.manual-assign-field label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.manual-assign-field select,
+.manual-assign-field .sg-autocomplete-input {
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color var(--transition-speed);
+}
+
+.manual-assign-field select:focus,
+.manual-assign-field .sg-autocomplete-input:focus {
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.15);
+}
+
+.manual-assign-priority {
+    min-width: 140px;
+}
+
+.manual-assign-actions {
+    display: flex;
+    align-items: flex-end;
+}
+
+.manual-assign-actions .btn {
+    white-space: nowrap;
+    padding: 0.45rem 1rem;
+    font-size: 0.85rem;
+}
+
+/* ── Support Group Autocomplete ────────────────────────────────────── */
+
+.sg-autocomplete-wrapper {
+    position: relative;
+    width: 100%;
+}
+
+.sg-autocomplete-input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.sg-autocomplete-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: 250px;
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    box-shadow: var(--shadow-md);
+    z-index: 100;
+}
+
+.sg-autocomplete-option {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.82rem;
+    cursor: pointer;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-color-light);
+    transition: background var(--transition-speed);
+}
+
+.sg-autocomplete-option:last-child {
+    border-bottom: none;
+}
+
+.sg-autocomplete-option:hover {
+    background: var(--penn-accent);
+    color: #fff;
+}
+
+.sg-autocomplete-no-match {
+    padding: 0.6rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    text-align: center;
+    font-style: italic;
+}
+
+.sg-autocomplete-more {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    text-align: center;
+    font-style: italic;
+    background: var(--bg-tertiary);
+}

@@ -1,0 +1,92 @@
+{% if error %}
+<div class="alert alert-error">
+    <span>⚠️</span>
+    <span>{{ error }}</span>
+</div>
+{% elif similar_tickets|length == 0 and documentation|length == 0 %}
+<div class="empty-state">
+    <div class="empty-state-icon">📭</div>
+    <div class="empty-state-text">No results found</div>
+    <div class="empty-state-hint">Try rephrasing your query or using different terms</div>
+</div>
+{% else %}
+
+<!-- Similar Tickets Section -->
+{% if similar_tickets|length > 0 %}
+<div class="mb-4">
+    <div class="results-header">
+        <span class="results-count">🎫 {{ similar_tickets|length }} similar ticket{{ 's' if similar_tickets|length != 1 else '' }}</span>
+    </div>
+    <div class="filter-toolbar">
+        <span class="filter-info" style="display: none;"></span>
+        <button type="button" class="btn-clear-filters" onclick="clearFilters(this)">✕ Clear filters</button>
+    </div>
+    <div style="overflow-x: auto;">
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th data-sortable data-sort-dir="none" onclick="sortTable(this, 1, 'natural')">Ticket ID <span class="sort-indicator">⇅</span></th>
+                    <th data-sortable data-sort-dir="none" onclick="sortTable(this, 2, 'number')">Similarity <span class="sort-indicator">⇅</span></th>
+                </tr>
+                <tr class="filter-row">
+                    <td></td>
+                    <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
+                    <td></td>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ticket in similar_tickets %}
+                <tr>
+                    <td><button class="ticket-expand-btn" onclick="toggleTicketDetailsHtmx(this, '{{ ticket.id }}')" title="Expand details">▶</button></td>
+                    <td data-sort-value="{{ ticket.id }}"><span class="ticket-id-group"><span class="ticket-id">{{ ticket.id }}</span><button class="copy-btn" onclick="copyTicketId(this, '{{ ticket.id }}')" title="Copy ticket ID">📋</button></span></td>
+                    <td data-sort-value="{{ ticket.similarity }}">
+                        <div class="similarity-score">
+                            <div class="similarity-bar">
+                                <div class="similarity-bar-fill" style="width: {{ (ticket.similarity * 100)|round(1) }}%"></div>
+                            </div>
+                            <span>{{ (ticket.similarity * 100)|round(1) }}%</span>
+                        </div>
+                    </td>
+                </tr>
+                <tr class="ticket-detail-row" style="display: none;">
+                    <td colspan="3">
+                        <div class="ticket-detail-loading">Loading details…</div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- Documentation Section -->
+{% if documentation|length > 0 %}
+<div>
+    <div class="results-header">
+        <span class="results-count">📚 {{ documentation|length }} knowledge base article{{ 's' if documentation|length != 1 else '' }}</span>
+    </div>
+    {% for doc in documentation %}
+    <div class="doc-result">
+        <div class="doc-result-header">
+            <span class="doc-result-title">{{ doc.title }}</span>
+            <div class="similarity-score">
+                <div class="similarity-bar">
+                    <div class="similarity-bar-fill" style="width: {{ (doc.similarity * 100)|round(1) }}%"></div>
+                </div>
+                <span>{{ (doc.similarity * 100)|round(1) }}%</span>
+            </div>
+        </div>
+        <div class="doc-result-meta">
+            <span>📓 {{ doc.notebook }}</span>
+            <span>📂 {{ doc.section }}</span>
+        </div>
+        <div class="doc-result-content">{{ doc.content }}</div>
+        <button class="doc-expand-btn" onclick="toggleDocContent(this)">Show more</button>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% endif %}

@@ -1,0 +1,57 @@
+{% if error %}
+<div class="alert alert-error">
+    <span>⚠️</span>
+    <span>{{ error }}</span>
+</div>
+{% elif similar_tickets|length == 0 %}
+<div class="empty-state">
+    <div class="empty-state-icon">📭</div>
+    <div class="empty-state-text">No similar tickets found</div>
+    <div class="empty-state-hint">The ticket ID may not have a pre-computed embedding</div>
+</div>
+{% else %}
+<div class="results-header">
+    <span class="results-count">Tickets similar to <span class="ticket-id-group"><span class="ticket-id">{{ source_ticket_id }}</span><button class="copy-btn" onclick="copyTicketId(this, '{{ source_ticket_id }}')" title="Copy ticket ID">📋</button></span> — {{ similar_tickets|length }} result{{ 's' if similar_tickets|length != 1 else '' }}</span>
+</div>
+<div class="filter-toolbar">
+    <span class="filter-info" style="display: none;"></span>
+    <button type="button" class="btn-clear-filters" onclick="clearFilters(this)">✕ Clear filters</button>
+</div>
+<div style="overflow-x: auto;">
+    <table class="results-table">
+        <thead>
+            <tr>
+                <th></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 1, 'natural')">Ticket ID <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 2, 'number')">Similarity <span class="sort-indicator">⇅</span></th>
+            </tr>
+            <tr class="filter-row">
+                <td></td>
+                <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
+                <td></td>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ticket in similar_tickets %}
+            <tr>
+                <td><button class="ticket-expand-btn" onclick="toggleTicketDetailsHtmx(this, '{{ ticket.id }}')" title="Expand details">▶</button></td>
+                <td data-sort-value="{{ ticket.id }}"><span class="ticket-id-group"><span class="ticket-id">{{ ticket.id }}</span><button class="copy-btn" onclick="copyTicketId(this, '{{ ticket.id }}')" title="Copy ticket ID">📋</button></span></td>
+                <td data-sort-value="{{ ticket.similarity }}">
+                    <div class="similarity-score">
+                        <div class="similarity-bar">
+                            <div class="similarity-bar-fill" style="width: {{ (ticket.similarity * 100)|round(1) }}%"></div>
+                        </div>
+                        <span>{{ (ticket.similarity * 100)|round(1) }}%</span>
+                    </div>
+                </td>
+            </tr>
+            <tr class="ticket-detail-row" style="display: none;">
+                <td colspan="3">
+                    <div class="ticket-detail-loading">Loading details…</div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}

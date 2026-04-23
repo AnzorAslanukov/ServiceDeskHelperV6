@@ -1,0 +1,164 @@
+{% if error %}
+<div class="alert alert-error">
+    <span>⚠️</span>
+    <span>{{ error }}</span>
+</div>
+{% elif tickets|length == 0 %}
+<div class="empty-state">
+    <div class="empty-state-icon">📭</div>
+    <div class="empty-state-text">No tickets found</div>
+    <div class="empty-state-hint">Try adjusting your search criteria</div>
+</div>
+{% else %}
+<div class="results-header">
+    <span class="results-count">
+        Showing {{ (page - 1) * page_size + 1 }}–{{ (page - 1) * page_size + tickets|length }} of {{ total }} ticket{{ 's' if total != 1 else '' }}
+    </span>
+</div>
+<div class="filter-toolbar">
+    <span class="filter-info" style="display: none;"></span>
+    <button type="button" class="btn-clear-filters" onclick="clearFilters(this)">✕ Clear filters</button>
+</div>
+<div style="overflow-x: auto;">
+    <table class="results-table">
+        <thead>
+            <tr>
+                <th></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 1, 'natural')">ID <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 2, 'string')">Title <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 3, 'string')">Status <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 4, 'number')">Priority <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 5, 'string')">Support Group <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 6, 'string')">Affected User <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 7, 'date')">Created <span class="sort-indicator">⇅</span></th>
+            </tr>
+            <tr class="filter-row">
+                <td></td>
+                <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
+                <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
+                <td><select data-filter-col="status" onchange="filterTable(this)"><option value="">All</option></select></td>
+                <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
+                <td>
+                    <div class="sg-dropdown-wrapper" data-selected-value="">
+                        <button type="button" class="sg-dropdown-toggle" onclick="toggleSgDropdown(this)">All</button>
+                        <div class="sg-dropdown-panel" style="display: none;">
+                            <input type="text" class="sg-dropdown-search" placeholder="Search groups…" oninput="filterSgDropdown(this)">
+                            <ul class="sg-dropdown-list">
+                                <li class="sg-dropdown-item sg-dropdown-item-all selected" onclick="selectSgOption(this)">All</li>
+                            </ul>
+                        </div>
+                    </div>
+                </td>
+                <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
+                <td>
+                    <div class="date-range-filter" data-filter-type="date-range">
+                        <input type="date" class="date-from" title="From date" onchange="filterTable(this)">
+                        <input type="date" class="date-to" title="To date" onchange="filterTable(this)">
+                    </div>
+                </td>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ticket in tickets %}
+            <tr>
+                <td><button class="ticket-expand-btn" onclick="toggleTicketDetails(this)" title="Expand details">▶</button></td>
+                <td data-sort-value="{{ ticket.id }}"><span class="ticket-id-group"><span class="ticket-id">{{ ticket.id }}</span><button class="copy-btn" onclick="copyTicketId(this, '{{ ticket.id }}')" title="Copy ticket ID">📋</button></span></td>
+                <td class="text-truncate" style="max-width: 300px;" title="{{ ticket.title or '' }}">
+                    {{ ticket.title or '—' }}
+                </td>
+                <td>
+                    {% if ticket.status %}
+                    <span class="badge {% if 'Active' in ticket.status or 'Progress' in ticket.status %}badge-active{% elif 'Pending' in ticket.status or 'Hold' in ticket.status %}badge-pending{% elif 'Resolved' in ticket.status or 'Completed' in ticket.status %}badge-resolved{% elif 'Closed' in ticket.status %}badge-closed{% endif %}">
+                        {{ ticket.status }}
+                    </span>
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+                <td>{{ ticket.priority or '—' }}</td>
+                <td class="text-truncate" style="max-width: 200px;" title="{{ ticket.support_group or '' }}">
+                    {{ ticket.support_group or '—' }}
+                </td>
+                <td>{{ ticket.affected_user or '—' }}</td>
+                <td style="white-space: nowrap;">{{ ticket.created_date or '—' }}</td>
+            </tr>
+            <tr class="ticket-detail-row" style="display: none;">
+                <td colspan="8">
+                    <div class="ticket-detail-grid">
+                        <div class="ticket-detail-item">
+                            <span class="ticket-detail-label">Title</span>
+                            <span class="ticket-detail-value">{{ ticket.title or '—' }}</span>
+                        </div>
+                        <div class="ticket-detail-item">
+                            <span class="ticket-detail-label">Status</span>
+                            <span class="ticket-detail-value">
+                                {% if ticket.status %}
+                                <span class="badge {% if 'Active' in ticket.status or 'Progress' in ticket.status %}badge-active{% elif 'Pending' in ticket.status or 'Hold' in ticket.status %}badge-pending{% elif 'Resolved' in ticket.status or 'Completed' in ticket.status %}badge-resolved{% elif 'Closed' in ticket.status %}badge-closed{% endif %}">
+                                    {{ ticket.status }}
+                                </span>
+                                {% else %}—{% endif %}
+                            </span>
+                        </div>
+                        <div class="ticket-detail-item">
+                            <span class="ticket-detail-label">Priority</span>
+                            <span class="ticket-detail-value">{{ ticket.priority or '—' }}</span>
+                        </div>
+                        <div class="ticket-detail-item">
+                            <span class="ticket-detail-label">Location</span>
+                            <span class="ticket-detail-value">{{ ticket.location or '—' }}</span>
+                        </div>
+                        <div class="ticket-detail-item">
+                            <span class="ticket-detail-label">Created Date</span>
+                            <span class="ticket-detail-value">{{ ticket.created_date or '—' }}</span>
+                        </div>
+                        <div class="ticket-detail-item">
+                            <span class="ticket-detail-label">Support Group</span>
+                            <span class="ticket-detail-value">{{ ticket.support_group or '—' }}</span>
+                        </div>
+                        {% if ticket.description %}
+                        <div class="ticket-detail-item ticket-detail-description">
+                            <span class="ticket-detail-label">Description</span>
+                            <span class="ticket-detail-value">{{ ticket.description }}</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination Controls -->
+{% if total > page_size %}
+<div class="pagination">
+    {% if page > 1 %}
+    <button class="btn btn-secondary btn-sm"
+            hx-post="/ui/search/field"
+            hx-target="#field-results"
+            hx-indicator="#field-loading"
+            hx-vals='{"field": "{{ form_field }}", "value": "{{ form_value }}", "operator": "{{ form_operator }}", "ticket_type": "{{ form_ticket_type }}", "page": {{ page - 1 }}, "page_size": {{ page_size }}}'>
+        ← Previous
+    </button>
+    {% else %}
+    <button class="btn btn-secondary btn-sm" disabled>← Previous</button>
+    {% endif %}
+
+    <span class="pagination-info">
+        Page {{ page }} of {{ ((total - 1) // page_size) + 1 }}
+    </span>
+
+    {% if has_more %}
+    <button class="btn btn-secondary btn-sm"
+            hx-post="/ui/search/field"
+            hx-target="#field-results"
+            hx-indicator="#field-loading"
+            hx-vals='{"field": "{{ form_field }}", "value": "{{ form_value }}", "operator": "{{ form_operator }}", "ticket_type": "{{ form_ticket_type }}", "page": {{ page + 1 }}, "page_size": {{ page_size }}}'>
+        Next →
+    </button>
+    {% else %}
+    <button class="btn btn-secondary btn-sm" disabled>Next →</button>
+    {% endif %}
+</div>
+{% endif %}
+{% endif %}

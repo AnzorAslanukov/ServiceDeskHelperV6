@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+
+{% block title %}Ticket Search — Service Desk Helper{% endblock %}
+{% block page_title %}Enhanced Ticket Search{% endblock %}
+
+{% block content %}
+<div class="card" data-tab-group="search">
+    <!-- Tabs -->
+    <div class="tabs">
+        <button class="tab active" data-tab="field" onclick="switchTab('search', 'field')">
+            🏷️ Field Search
+        </button>
+        <button class="tab" data-tab="description" onclick="switchTab('search', 'description')">
+            📝 Description Search
+        </button>
+        <button class="tab" data-tab="semantic" onclick="switchTab('search', 'semantic')">
+            🧠 Semantic Search
+        </button>
+        <button class="tab" data-tab="similar" onclick="switchTab('search', 'similar')">
+            🔗 Similar Tickets
+        </button>
+    </div>
+
+    <!-- ═══ Tab 1: Field Search ═══ -->
+    <div class="tab-content active" data-tab-content="field">
+        <form hx-post="/ui/search/field"
+              hx-target="#field-results"
+              hx-indicator="#field-loading">
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Field Name</label>
+                    <select name="field" class="form-select">
+                        <option value="contactMethod">Contact Method</option>
+                        <option value="title">Title</option>
+                        <option value="supportGroup">Support Group</option>
+                        <option value="status">Status</option>
+                        <option value="priority">Priority</option>
+                        <option value="affectedUser">Affected User</option>
+                        <option value="assignedToUser">Assigned To</option>
+                        <option value="classification">Classification</option>
+                        <option value="location">Location</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Value</label>
+                    <input type="text" name="value" class="form-input"
+                           placeholder="e.g., 215-555-1234" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Operator</label>
+                    <select name="operator" class="form-select">
+                        <option value="eq">Equals (eq)</option>
+                        <option value="ne">Not Equals (ne)</option>
+                        <option value="contains">Contains</option>
+                        <option value="like">Like</option>
+                        <option value="gt">Greater Than (gt)</option>
+                        <option value="lt">Less Than (lt)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="d-flex align-center justify-between">
+                <div class="form-group mb-1">
+                    <label class="form-label">Ticket Type</label>
+                    <div class="toggle-group" id="field-ticket-type">
+                        <input type="hidden" name="ticket_type" value="incident">
+                        <button type="button" class="toggle-option active" data-value="incident"
+                                onclick="setToggle('field-ticket-type', 'incident')">
+                            Incident (IR)
+                        </button>
+                        <button type="button" class="toggle-option" data-value="servicerequest"
+                                onclick="setToggle('field-ticket-type', 'servicerequest')">
+                            Service Request (SR)
+                        </button>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    🔍 Search
+                </button>
+            </div>
+        </form>
+
+        <!-- Loading indicator -->
+        <div id="field-loading" class="htmx-indicator loading-spinner">
+            <div class="spinner"></div>
+            <span>Searching tickets...</span>
+        </div>
+
+        <!-- Results area -->
+        <div id="field-results" class="results-area">
+            <div class="empty-state">
+                <div class="empty-state-icon">🔍</div>
+                <div class="empty-state-text">Search by field value</div>
+                <div class="empty-state-hint">Select a field, enter a value, and click Search</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Tab 2: Description Search ═══ -->
+    <div class="tab-content" data-tab-content="description">
+        <form hx-post="/ui/search/description"
+              hx-target="#description-results"
+              hx-indicator="#description-loading">
+
+            <div class="form-group">
+                <label class="form-label">Search Text</label>
+                <input type="text" name="text" class="form-input"
+                       placeholder="e.g., printer not printing" required>
+                <div class="form-hint">Enter one or more words — tickets must contain ALL words in their description (words matched independently)</div>
+            </div>
+
+            <div class="d-flex align-center justify-between">
+                <div class="form-group mb-1">
+                    <label class="form-label">Ticket Type</label>
+                    <div class="toggle-group" id="desc-ticket-type">
+                        <input type="hidden" name="ticket_type" value="incident">
+                        <button type="button" class="toggle-option active" data-value="incident"
+                                onclick="setToggle('desc-ticket-type', 'incident')">
+                            Incident (IR)
+                        </button>
+                        <button type="button" class="toggle-option" data-value="servicerequest"
+                                onclick="setToggle('desc-ticket-type', 'servicerequest')">
+                            Service Request (SR)
+                        </button>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    🔍 Search
+                </button>
+            </div>
+        </form>
+
+        <div id="description-loading" class="htmx-indicator loading-spinner">
+            <div class="spinner"></div>
+            <span>Searching descriptions...</span>
+        </div>
+
+        <div id="description-results" class="results-area">
+            <div class="empty-state">
+                <div class="empty-state-icon">📝</div>
+                <div class="empty-state-text">Search by description</div>
+                <div class="empty-state-hint">Enter text to find in ticket descriptions</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Tab 3: Semantic Search ═══ -->
+    <div class="tab-content" data-tab-content="semantic">
+        <form hx-post="/ui/search/semantic"
+              hx-target="#semantic-results"
+              hx-indicator="#semantic-loading">
+
+            <div class="form-group">
+                <label class="form-label">Natural Language Query</label>
+                <textarea name="query" class="form-textarea" rows="3"
+                          placeholder="e.g., user cannot log into PennChart after password reset" required></textarea>
+                <div class="form-hint">Describe the issue in plain language — AI will find conceptually similar tickets and documentation</div>
+            </div>
+
+            <div class="d-flex align-center justify-between">
+                <div class="form-group mb-1">
+                    <label class="form-label">Results to return</label>
+                    <div class="range-group">
+                        <input type="range" name="top_k" id="semantic-topk" class="form-range"
+                               min="1" max="50" value="10"
+                               oninput="updateRangeDisplay('semantic-topk', 'semantic-topk-val')">
+                        <span id="semantic-topk-val" class="range-value">10</span>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    🧠 Search
+                </button>
+            </div>
+        </form>
+
+        <div id="semantic-loading" class="htmx-indicator loading-spinner">
+            <div class="spinner"></div>
+            <span>Running semantic search...</span>
+        </div>
+
+        <div id="semantic-results" class="results-area">
+            <div class="empty-state">
+                <div class="empty-state-icon">🧠</div>
+                <div class="empty-state-text">AI-powered semantic search</div>
+                <div class="empty-state-hint">Describe an issue and find similar tickets + knowledge base articles</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Tab 4: Similar Tickets ═══ -->
+    <div class="tab-content" data-tab-content="similar">
+        <form hx-post="/ui/search/similar"
+              hx-target="#similar-results"
+              hx-indicator="#similar-loading">
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Ticket ID</label>
+                    <input type="text" name="ticket_id" class="form-input"
+                           placeholder="e.g., IR1959493" required>
+                    <div class="form-hint">Enter an existing ticket ID to find historically similar incidents</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Results to return</label>
+                    <div class="range-group">
+                        <input type="range" name="top_k" id="similar-topk" class="form-range"
+                               min="1" max="50" value="10"
+                               oninput="updateRangeDisplay('similar-topk', 'similar-topk-val')">
+                        <span id="similar-topk-val" class="range-value">10</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex justify-between">
+                <div></div>
+                <button type="submit" class="btn btn-primary">
+                    🔗 Find Similar
+                </button>
+            </div>
+        </form>
+
+        <div id="similar-loading" class="htmx-indicator loading-spinner">
+            <div class="spinner"></div>
+            <span>Finding similar tickets...</span>
+        </div>
+
+        <div id="similar-results" class="results-area">
+            <div class="empty-state">
+                <div class="empty-state-icon">🔗</div>
+                <div class="empty-state-text">Find similar tickets</div>
+                <div class="empty-state-hint">Enter a ticket ID to find historically similar incidents</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

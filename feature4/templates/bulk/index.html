@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Bulk Assignment — Service Desk Helper{% endblock %}
+{% block page_title %}Bulk Ticket Assignment{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/bulk-static/css/bulk.css">
+{% endblock %}
+
+{% block content %}
+<!-- Toast container for notifications -->
+<div class="bulk-toast-container" id="bulkToastContainer"></div>
+
+<!-- Login Screen (shown first) -->
+<div id="bulkLoginScreen" class="bulk-login-overlay">
+    <div class="bulk-login-card">
+        <h2>📦 Bulk Assignment</h2>
+        <p>Enter your user ID to start processing the Validation queue.</p>
+        <form onsubmit="bulkLogin(event)">
+            <div class="form-group">
+                <label class="form-label" for="bulkUserId">User ID</label>
+                <input type="text" class="form-input" id="bulkUserId"
+                       placeholder="e.g. aslanuka" required autocomplete="off">
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;padding:0.65rem;font-size:1rem;">
+                🚀 Enter Queue
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- Main Queue View (hidden until login) -->
+<div id="bulkMainView" style="display:none;">
+
+    <!-- Status Bar -->
+    <div class="bulk-status-bar">
+        <div class="bulk-status-item">
+            <span class="bulk-status-dot disconnected" id="bulkWsDot"></span>
+            <span id="bulkWsStatus">Disconnected</span>
+        </div>
+        <div class="bulk-status-item">
+            👤 <span class="bulk-user-badge" id="bulkUserDisplay">—</span>
+        </div>
+        <div class="bulk-status-item">
+            📋 Queue: <strong id="bulkQueueCount">0</strong> tickets
+        </div>
+        <div class="bulk-status-item">
+            🔒 My locks: <strong id="bulkMyLockCount">0</strong>
+        </div>
+        <div class="bulk-status-item">
+            ✅ Selected: <strong id="bulkSelectedCount">0</strong>
+        </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="bulk-toolbar">
+        <div class="bulk-toolbar-left">
+            <button class="btn" onclick="bulkRefreshQueue()" id="btnRefresh">
+                🔄 Refresh Queue
+            </button>
+            <button class="btn btn-primary" onclick="bulkClaimBatch()" id="btnClaim">
+                📥 Claim Batch
+            </button>
+            <input type="number" class="bulk-batch-size" id="bulkBatchSize"
+                   value="10" min="1" max="50" title="Batch size">
+            <button class="btn btn-warning" onclick="bulkGetRecommendations()" id="btnRecommend" disabled>
+                🤖 Get Recommendations
+            </button>
+            <button class="btn btn-success" onclick="bulkAssignSelected()" id="btnAssign" disabled>
+                ✅ Assign Selected
+            </button>
+        </div>
+        <div class="bulk-toolbar-right">
+            <button class="btn" onclick="bulkUnlockMine()" id="btnUnlockMine">
+                🔓 Release My Locks
+            </button>
+            <button class="btn" onclick="bulkToggleSettings()" title="Settings">
+                ⚙️ Settings
+            </button>
+        </div>
+    </div>
+
+    <!-- Settings Panel (hidden by default) -->
+    <div class="bulk-settings-panel" id="bulkSettingsPanel" style="display:none;">
+        <h3>⚙️ Recommendation Settings</h3>
+        <div class="bulk-settings-grid">
+            <div class="form-group">
+                <label class="form-label">Documentation Results</label>
+                <div class="range-group">
+                    <input type="range" class="form-range" id="bulkTopKDocs"
+                           min="1" max="20" value="5"
+                           oninput="document.getElementById('bulkTopKDocsVal').textContent=this.value">
+                    <span class="range-value" id="bulkTopKDocsVal">5</span>
+                </div>
+                <div class="form-hint">Knowledge base articles per ticket</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Similar Tickets</label>
+                <div class="range-group">
+                    <input type="range" class="form-range" id="bulkTopKTickets"
+                           min="1" max="20" value="5"
+                           oninput="document.getElementById('bulkTopKTicketsVal').textContent=this.value">
+                    <span class="range-value" id="bulkTopKTicketsVal">5</span>
+                </div>
+                <div class="form-hint">Historical tickets per ticket</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Max Response Tokens</label>
+                <div class="range-group">
+                    <input type="range" class="form-range" id="bulkMaxTokens"
+                           min="100" max="4096" step="100" value="2048"
+                           oninput="document.getElementById('bulkMaxTokensVal').textContent=this.value">
+                    <span class="range-value" id="bulkMaxTokensVal">2048</span>
+                </div>
+                <div class="form-hint">Max tokens in each AI response</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Queue Table -->
+    <div class="bulk-queue-card">
+        <div class="card-header">
+            <h2>📋 Validation Queue</h2>
+            <span id="bulkQueueBadge" class="badge" style="font-size:0.8rem;">—</span>
+        </div>
+        <div class="bulk-table-wrapper">
+            <div id="bulkQueueBody">
+                <!-- Populated by JavaScript -->
+                <div class="bulk-empty-state">
+                    <div class="empty-icon">📋</div>
+                    <div class="empty-text">Click "Refresh Queue" to load tickets</div>
+                    <div class="empty-hint">Tickets from the Service Desk\Validation queue will appear here</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/bulk-static/js/bulk.js"></script>
+{% endblock %}

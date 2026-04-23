@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Service Desk Helper{% endblock %}</title>
+    <link rel="icon" type="image/x-icon" href="/static/img/favicon.ico">
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <script src="/static/js/app.js"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <img src="/static/img/upenn_logo.png" alt="Penn Medicine" class="sidebar-logo">
+                <div>
+                    <div class="sidebar-title">Service Desk<br>Helper</div>
+                    <div class="sidebar-subtitle">Penn Medicine IS</div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <div class="nav-section-label">Features</div>
+                <a href="/ui/search" class="nav-item {% if active_page == 'search' %}active{% endif %}">
+                    <span class="nav-icon">🔍</span>
+                    <span>Ticket Search</span>
+                </a>
+                <a href="/ui/chat" class="nav-item {% if active_page == 'chat' %}active{% endif %}">
+                    <span class="nav-icon">💬</span>
+                    <span>Q&A Chat</span>
+                </a>
+                <a href="/ui/assignment" class="nav-item {% if active_page == 'assignment' %}active{% endif %}">
+                    <span class="nav-icon">🎯</span>
+                    <span>Assignment</span>
+                </a>
+                <a href="/bulk/ui" class="nav-item {% if active_page == 'bulk' %}active{% endif %}">
+                    <span class="nav-icon">📦</span>
+                    <span>Bulk Assignment</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <h1 class="page-title">{% block page_title %}Service Desk Helper{% endblock %}</h1>
+                </div>
+                <div class="header-right">
+                    <div class="theme-toggle">
+                        <button class="theme-toggle-btn" data-theme="light" onclick="setTheme('light')" title="Light mode">
+                            ☀️
+                        </button>
+                        <button class="theme-toggle-btn" data-theme="dark" onclick="setTheme('dark')" title="Dark mode">
+                            🌙
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Page Content -->
+            <main class="page-content">
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+</body>
+</html>

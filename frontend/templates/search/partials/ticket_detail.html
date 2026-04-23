@@ -1,0 +1,38 @@
+<div class="ticket-detail-grid">
+    <div class="ticket-detail-item">
+        <span class="ticket-detail-label">Title</span>
+        <span class="ticket-detail-value">{{ ticket.title or '—' }}</span>
+    </div>
+    <div class="ticket-detail-item">
+        <span class="ticket-detail-label">Status</span>
+        <span class="ticket-detail-value">
+            {% if ticket.status %}
+            <span class="badge {% if 'Active' in ticket.status or 'Progress' in ticket.status %}badge-active{% elif 'Pending' in ticket.status or 'Hold' in ticket.status %}badge-pending{% elif 'Resolved' in ticket.status or 'Completed' in ticket.status %}badge-resolved{% elif 'Closed' in ticket.status %}badge-closed{% endif %}">
+                {{ ticket.status }}
+            </span>
+            {% else %}—{% endif %}
+        </span>
+    </div>
+    <div class="ticket-detail-item">
+        <span class="ticket-detail-label">Priority</span>
+        <span class="ticket-detail-value">{{ ticket.priority or '—' }}</span>
+    </div>
+    <div class="ticket-detail-item">
+        <span class="ticket-detail-label">Location</span>
+        <span class="ticket-detail-value">{{ ticket.location or '—' }}</span>
+    </div>
+    <div class="ticket-detail-item">
+        <span class="ticket-detail-label">Created Date</span>
+        <span class="ticket-detail-value">{{ ticket.created_date or '—' }}</span>
+    </div>
+    <div class="ticket-detail-item">
+        <span class="ticket-detail-label">Support Group</span>
+        <span class="ticket-detail-value">{{ ticket.support_group or '—' }}</span>
+    </div>
+    {% if ticket.description %}
+    <div class="ticket-detail-item ticket-detail-description">
+        <span class="ticket-detail-label">Description</span>
+        <span class="ticket-detail-value">{{ ticket.description }}</span>
+    </div>
+    {% endif %}
+</div>

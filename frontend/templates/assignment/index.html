@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Assignment Recommendation — Service Desk Helper{% endblock %}
+{% block page_title %}Ticket Assignment Recommendation{% endblock %}
+
+{% block content %}
+<div class="assignment-layout">
+    <!-- Input Section -->
+    <div class="card assignment-input-card">
+        <div class="card-header">
+            <div class="d-flex align-center gap-2">
+                <h2>🎯 Get AI Recommendation</h2>
+            </div>
+            <div class="d-flex align-center gap-2">
+                <button class="btn btn-sm btn-secondary" onclick="toggleAssignmentSettings()" title="Settings">
+                    ⚙️ Settings
+                </button>
+            </div>
+        </div>
+
+        <!-- Settings Panel (collapsed by default) -->
+        <div class="assignment-settings" id="assignmentSettings" style="display:none;">
+            <div class="assignment-settings-inner">
+                <div class="form-group">
+                    <label class="form-label">Documentation Results</label>
+                    <div class="range-group">
+                        <input type="range" class="form-range" id="assignTopKDocs" min="1" max="20" value="5"
+                               oninput="updateRangeDisplay('assignTopKDocs','assignTopKDocsVal')">
+                        <span class="range-value" id="assignTopKDocsVal">5</span>
+                    </div>
+                    <div class="form-hint">Number of knowledge base articles to retrieve for context</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Similar Tickets</label>
+                    <div class="range-group">
+                        <input type="range" class="form-range" id="assignTopKTickets" min="1" max="20" value="5"
+                               oninput="updateRangeDisplay('assignTopKTickets','assignTopKTicketsVal')">
+                        <span class="range-value" id="assignTopKTicketsVal">5</span>
+                    </div>
+                    <div class="form-hint">Number of similar historical tickets to retrieve for context</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Max Response Length</label>
+                    <div class="range-group">
+                        <input type="range" class="form-range" id="assignMaxTokens" min="100" max="4096" step="100" value="2048"
+                               oninput="updateRangeDisplay('assignMaxTokens','assignMaxTokensVal')">
+                        <span class="range-value" id="assignMaxTokensVal">2048</span>
+                    </div>
+                    <div class="form-hint">Maximum tokens in the AI response</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Ticket ID Input -->
+        <div class="assignment-input-area">
+            <form id="assignmentForm"
+                  hx-post="/ui/assignment/recommend"
+                  hx-target="#assignmentResults"
+                  hx-swap="innerHTML"
+                  hx-indicator="#assignmentLoading"
+                  onsubmit="return prepareAssignmentSubmit()">
+                <div class="assignment-input-row">
+                    <div class="form-group assignment-ticket-input-group">
+                        <label class="form-label" for="assignTicketId">Ticket ID</label>
+                        <input type="text"
+                               class="form-input"
+                               id="assignTicketId"
+                               name="ticket_id"
+                               placeholder="e.g. IR1959493 or SR1234567"
+                               required
+                               autocomplete="off"
+                               pattern="^(IR|SR)\d+$"
+                               title="Enter a valid ticket ID starting with IR or SR followed by numbers">
+                    </div>
+                    <!-- Hidden fields for settings -->
+                    <input type="hidden" name="top_k_docs" id="assignTopKDocsHidden" value="5">
+                    <input type="hidden" name="top_k_tickets" id="assignTopKTicketsHidden" value="5">
+                    <input type="hidden" name="max_tokens" id="assignMaxTokensHidden" value="2048">
+                    <div class="assignment-submit-group">
+                        <button type="submit" class="btn btn-primary assignment-submit-btn" id="assignSubmitBtn">
+                            🎯 Get Recommendation
+                        </button>
+                    </div>
+                </div>
+            </form>
+            <div class="assignment-input-hint">
+                Enter an Incident (IR) or Service Request (SR) ticket ID to get an AI-recommended support group and priority.
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Indicator -->
+    <div class="assignment-loading" id="assignmentLoading">
+        <div class="assignment-loading-inner">
+            <div class="assignment-loading-spinner"></div>
+            <div class="assignment-loading-text">
+                <strong>Analyzing ticket…</strong>
+                <span>Fetching ticket → Searching knowledge base → Generating recommendation</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Area (HTMX target) -->
+    <div id="assignmentResults"></div>
+</div>
+{% endblock %}

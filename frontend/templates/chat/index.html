@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Q&A Chat — Service Desk Helper{% endblock %}
+{% block page_title %}Q&A Chatbot{% endblock %}
+
+{% block content %}
+<div class="chat-layout">
+    <!-- Chat Main Area -->
+    <div class="chat-main">
+        <div class="card chat-card">
+            <!-- Chat Header -->
+            <div class="card-header chat-header">
+                <div class="d-flex align-center gap-2">
+                    <h2>💬 Service Desk Assistant</h2>
+                    <span class="badge chat-session-badge" id="chatSessionBadge" style="display:none;"></span>
+                </div>
+                <div class="d-flex align-center gap-2">
+                    <button class="btn btn-sm btn-secondary" onclick="toggleChatSettings()" title="Settings">
+                        ⚙️ Settings
+                    </button>
+                    <button class="btn btn-sm btn-secondary" onclick="resetChatSession()" title="New conversation">
+                        🔄 New Chat
+                    </button>
+                </div>
+            </div>
+
+            <!-- Settings Panel (collapsed by default) -->
+            <div class="chat-settings" id="chatSettings" style="display:none;">
+                <div class="chat-settings-inner">
+                    <div class="form-group">
+                        <label class="form-label">Documentation Results</label>
+                        <div class="range-group">
+                            <input type="range" class="form-range" id="chatTopKDocs" min="1" max="20" value="5"
+                                   oninput="updateRangeDisplay('chatTopKDocs','chatTopKDocsVal')">
+                            <span class="range-value" id="chatTopKDocsVal">5</span>
+                        </div>
+                        <div class="form-hint">Number of knowledge base articles to retrieve</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Similar Tickets</label>
+                        <div class="range-group">
+                            <input type="range" class="form-range" id="chatTopKTickets" min="1" max="20" value="5"
+                                   oninput="updateRangeDisplay('chatTopKTickets','chatTopKTicketsVal')">
+                            <span class="range-value" id="chatTopKTicketsVal">5</span>
+                        </div>
+                        <div class="form-hint">Number of similar historical tickets to retrieve</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Response Length</label>
+                        <div class="range-group">
+                            <input type="range" class="form-range" id="chatMaxTokens" min="100" max="4096" step="100" value="2048"
+                                   oninput="updateRangeDisplay('chatMaxTokens','chatMaxTokensVal')">
+                            <span class="range-value" id="chatMaxTokensVal">2048</span>
+                        </div>
+                        <div class="form-hint">Maximum tokens in the AI response</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Messages Area -->
+            <div class="chat-messages" id="chatMessages">
+                <!-- Welcome message -->
+                <div class="chat-welcome">
+                    <div class="chat-welcome-icon">🤖</div>
+                    <div class="chat-welcome-title">Penn Medicine IT Service Desk Assistant</div>
+                    <div class="chat-welcome-text">
+                        Ask me anything about IT support procedures, troubleshooting steps, or ticket handling.
+                        I'll search our knowledge base and historical tickets to help you find answers.
+                    </div>
+                    <div class="chat-welcome-suggestions">
+                        <button class="chat-suggestion" onclick="useSuggestion(this)">How do I reset a PennChart password?</button>
+                        <button class="chat-suggestion" onclick="useSuggestion(this)">VPN connection troubleshooting steps</button>
+                        <button class="chat-suggestion" onclick="useSuggestion(this)">Printer not working at HUP</button>
+                        <button class="chat-suggestion" onclick="useSuggestion(this)">Citrix session is frozen</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="chat-input-area">
+                <form class="chat-input-form" onsubmit="sendChatMessage(event)">
+                    <textarea class="chat-input" id="chatInput"
+                              placeholder="Ask a question about IT support..."
+                              rows="1"
+                              onkeydown="handleChatKeydown(event)"
+                              oninput="autoResizeChatInput(this)"></textarea>
+                    <button type="submit" class="btn btn-primary chat-send-btn" id="chatSendBtn" title="Send message">
+                        <span class="chat-send-icon">➤</span>
+                    </button>
+                </form>
+                <div class="chat-input-hint">Press Enter to send · Shift+Enter for new line</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
