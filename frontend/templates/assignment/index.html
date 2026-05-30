@@ -69,8 +69,8 @@
                                placeholder="e.g. IR1959493 or SR1234567"
                                required
                                autocomplete="off"
-                               pattern="^(IR|SR)\d+$"
-                               title="Enter a valid ticket ID starting with IR or SR followed by numbers">
+                               pattern="^[IiSs][Rr]\d+$"
+                               title="Enter a valid ticket ID starting with IR or SR followed by numbers (case-insensitive)">
                     </div>
                     <!-- Hidden fields for settings -->
                     <input type="hidden" name="top_k_docs" id="assignTopKDocsHidden" value="5">
@@ -84,7 +84,7 @@
                 </div>
             </form>
             <div class="assignment-input-hint">
-                Enter an Incident (IR) or Service Request (SR) ticket ID to get an AI-recommended support group and priority.
+                Enter an Incident (IR) or Service Request (SR) ticket ID to get an AI-recommended support group and priority. Case-insensitive — both <code>ir1234567</code> and <code>IR1234567</code> work.
             </div>
         </div>
     </div>

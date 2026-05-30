@@ -7,6 +7,8 @@ Endpoints:
     GET  /chat/history/{id} — Retrieve conversation history for a session
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.dependencies import get_chatbot_service
@@ -17,6 +19,8 @@ from src.models.chat import (
     ResetSessionRequest,
 )
 from src.services.chatbot import ChatbotService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -37,13 +41,22 @@ async def chat(
     Provide a `session_id` to continue an existing conversation,
     or omit it to start a new session.
     """
-    return await service.chat(
-        message=request.message,
-        session_id=request.session_id,
-        top_k_docs=request.top_k_docs,
-        top_k_tickets=request.top_k_tickets,
-        max_tokens=request.max_tokens,
-    )
+    try:
+        return await service.chat(
+            message=request.message,
+            session_id=request.session_id,
+            top_k_docs=request.top_k_docs,
+            top_k_tickets=request.top_k_tickets,
+            max_tokens=request.max_tokens,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Chat service error for message: %s", request.message[:100])
+        raise HTTPException(
+            status_code=502,
+            detail=f"Chat service error: {e}",
+        )
 
 
 @router.post("/reset")

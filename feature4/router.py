@@ -16,6 +16,7 @@ WebSocket Endpoint:
     WS /bulk/ws?user_id=xxx — Real-time lock/unlock/assign event stream
 """
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -40,8 +41,11 @@ from feature4.service import BulkAssignmentService
 from feature4.websocket.events import (
     assign_event,
     lock_event,
+    presence_join_event,
+    presence_leave_event,
     queue_loading_complete_event,
     queue_loading_start_event,
+    queue_refresh_event,
     queue_ticket_event,
     rec_complete_event,
     rec_processing_event,
@@ -55,6 +59,88 @@ from feature4.websocket.manager import ConnectionManager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bulk", tags=["bulk"])
+
+# ── Background Auto-Refresh Task ──────────────────────────────────────
+
+_refresh_task: asyncio.Task | None = None
+_REFRESH_INTERVAL_SECONDS = 30
+
+
+async def _auto_refresh_loop(
+    service: BulkAssignmentService,
+    manager: ConnectionManager,
+) -> None:
+    """
+    Background polling loop that periodically checks Athena for queue
+    changes and broadcasts incremental diffs to all connected clients.
+
+    Runs as long as there is at least one WebSocket client connected.
+    Cancelled automatically when the last client disconnects.
+    """
+    logger.info("Auto-refresh loop started (interval=%ds)", _REFRESH_INTERVAL_SECONDS)
+    try:
+        while True:
+            await asyncio.sleep(_REFRESH_INTERVAL_SECONDS)
+
+            # Only poll if there are connected clients
+            if not manager.connected_user_ids:
+                logger.debug("No connected clients — skipping refresh")
+                continue
+
+            try:
+                diff = await service.compute_queue_diff()
+                added = diff["added"]
+                removed = diff["removed"]
+
+                if not added and not removed:
+                    logger.debug("Auto-refresh: no queue changes detected")
+                    continue
+
+                # Serialise added tickets for the wire
+                added_dicts = [t.model_dump() for t in added]
+
+                event = queue_refresh_event(
+                    added=added_dicts,
+                    removed=removed,
+                    total=diff["total"],
+                    locks=diff["locks"],
+                )
+                await manager.broadcast_all(event)
+
+                logger.info(
+                    "Auto-refresh broadcast: +%d added, -%d removed (total=%d)",
+                    len(added),
+                    len(removed),
+                    diff["total"],
+                )
+            except Exception as exc:
+                logger.warning("Auto-refresh poll failed: %s", exc)
+
+    except asyncio.CancelledError:
+        logger.info("Auto-refresh loop cancelled")
+        raise
+
+
+def _start_refresh_task(
+    service: BulkAssignmentService,
+    manager: ConnectionManager,
+) -> None:
+    """Start the background auto-refresh task if not already running."""
+    global _refresh_task
+    if _refresh_task is None or _refresh_task.done():
+        _refresh_task = asyncio.create_task(
+            _auto_refresh_loop(service, manager),
+            name="bulk_auto_refresh",
+        )
+
+
+def _stop_refresh_task_if_idle(manager: ConnectionManager) -> None:
+    """Cancel the background auto-refresh task if no clients remain."""
+    global _refresh_task
+    if not manager.connected_user_ids and _refresh_task and not _refresh_task.done():
+        _refresh_task.cancel()
+        _refresh_task = None
+        logger.info("Auto-refresh loop stopped (no connected clients)")
 
 # Templates directory for Feature #4 (uses shared base.html from frontend/templates)
 _FEATURE4_DIR = Path(__file__).resolve().parent
@@ -149,12 +235,16 @@ async def claim_batch(
     """
     Auto-claim the next N unlocked tickets from the queue.
 
-    Fetches the current queue, then locks the first N unlocked tickets
-    for the requesting user.
+    If the client provides ticket_ids (from its local queue view), those
+    are used directly — avoiding a costly Athena re-fetch.  Otherwise
+    falls back to fetching the queue from Athena.
     """
-    # Fetch current queue to get ordered ticket IDs
-    queue = await service.fetch_queue()
-    queue_ticket_ids = [t.id for t in queue.tickets]
+    if request.ticket_ids is not None:
+        queue_ticket_ids = request.ticket_ids
+    else:
+        # Fallback: fetch current queue from Athena (slow path)
+        queue = await service.fetch_queue()
+        queue_ticket_ids = [t.id for t in queue.tickets]
 
     claimed = service.claim_batch(request.user_id, request.batch_size, queue_ticket_ids)
 
@@ -200,9 +290,6 @@ async def bulk_recommend(
     try:
         result = await service.batch_recommend(
             ticket_ids=request.ticket_ids,
-            top_k_docs=request.top_k_docs,
-            top_k_tickets=request.top_k_tickets,
-            max_tokens=request.max_tokens,
             on_processing=on_processing,
             on_result=on_result,
         )
@@ -295,9 +382,24 @@ async def websocket_endpoint(
     """
     await manager.connect(websocket, user_id)
 
+    # Assign a unique color to this user
+    manager.assign_color(user_id)
+
+    # Start background auto-refresh if this is the first client
+    _start_refresh_task(service, manager)
+
     try:
-        # Send current lock state on connect
-        await manager.send_to_user(user_id, state_sync_event(service.get_locks()))
+        # Send current lock state + online users + user colors on connect
+        sync = state_sync_event(service.get_locks())
+        sync["users"] = manager.connected_user_ids
+        sync["user_colors"] = manager.user_colors
+        await manager.send_to_user(user_id, sync)
+
+        # Broadcast presence_join to all OTHER clients (with user_colors)
+        await manager.broadcast(
+            presence_join_event(user_id, manager.connected_user_ids, user_colors=manager.user_colors),
+            exclude_user=user_id,
+        )
 
         # Listen for client messages
         while True:
@@ -328,10 +430,20 @@ async def websocket_endpoint(
                         queue_ticket_event(ticket.model_dump(), count),
                     )
 
+                # Track streamed ticket IDs for snapshot
+                _streamed_ids: list[str] = []
+
+                async def _on_ticket_with_tracking(ticket, count):
+                    _streamed_ids.append(ticket.id)
+                    await _on_ticket(ticket, count)
+
                 try:
                     total = await service.fetch_queue_streaming(
-                        on_ticket=_on_ticket,
+                        on_ticket=_on_ticket_with_tracking,
                     )
+                    # Snapshot ticket IDs so auto-refresh diffs are correct
+                    service.snapshot_ticket_ids(set(_streamed_ids))
+
                     await manager.send_to_user(
                         user_id,
                         queue_loading_complete_event(
@@ -366,6 +478,14 @@ async def websocket_endpoint(
         released = service.release_user_locks(user_id)
         manager.disconnect(user_id)
 
+        # Stop auto-refresh if no clients remain
+        _stop_refresh_task_if_idle(manager)
+
         # Broadcast unlock events for released tickets
         for tid in released:
             await manager.broadcast_all(unlock_event(tid, user_id))
+
+        # Broadcast presence_leave to remaining clients (with updated user_colors)
+        await manager.broadcast_all(
+            presence_leave_event(user_id, manager.connected_user_ids, user_colors=manager.user_colors)
+        )

@@ -215,18 +215,12 @@ async def ticket_detail_partial(
 async def assignment_recommend_partial(
     request: Request,
     ticket_id: str = Form(...),
-    top_k_docs: int = Form(5),
-    top_k_tickets: int = Form(5),
-    max_tokens: int = Form(2048),
     service: AssignmentService = Depends(get_assignment_service),
 ):
     """HTMX partial: Get assignment recommendation and return results HTML."""
     try:
         result = await service.recommend_assignment(
-            ticket_id=ticket_id.strip().upper(),
-            top_k_docs=top_k_docs,
-            top_k_tickets=top_k_tickets,
-            max_tokens=max_tokens,
+            ticket_id=ticket_id,
         )
         return templates.TemplateResponse(
             "assignment/partials/recommendation.html",
@@ -234,10 +228,10 @@ async def assignment_recommend_partial(
                 "request": request,
                 "ticket": result.ticket.model_dump(),
                 "recommendation": result.recommendation.model_dump(),
-                "sources": [s.model_dump() for s in result.sources],
             },
         )
     except ValueError as e:
+        # Validation errors from _validate_and_normalize_ticket_id() — user-friendly messages
         return templates.TemplateResponse(
             "assignment/partials/recommendation.html",
             {"request": request, "error": str(e)},
@@ -245,8 +239,9 @@ async def assignment_recommend_partial(
     except Exception as e:
         logger.exception("Assignment recommendation failed for %s", ticket_id)
         error_msg = str(e)
+        normalized = ticket_id.strip().upper() if ticket_id else ticket_id
         if "404" in error_msg or "not found" in error_msg.lower():
-            error_msg = f"Ticket '{ticket_id.strip().upper()}' not found in Athena."
+            error_msg = f"Ticket '{normalized}' not found in Athena. Please verify the ticket ID exists."
         else:
             error_msg = f"Failed to generate recommendation: {error_msg}"
         return templates.TemplateResponse(

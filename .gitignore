@@ -30,3 +30,17 @@ Thumbs.db
 
 # Exploration output
 exploration/output/
+
+# Large data files
+onenote_documentation.jsonl
+*.pkl
+
+# Internal documentation
+athena_ticketing_system_documentation/
+
+# Temp/junk files
+temp_bulk.js
+-p/
+
+# Cline config
+.clineignore

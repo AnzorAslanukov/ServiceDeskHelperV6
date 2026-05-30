@@ -103,6 +103,15 @@ class ClaimBatchRequest(BaseModel):
         le=50,
         description="Number of tickets to claim.",
     )
+    ticket_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Ordered list of ticket IDs from the client's current queue view. "
+            "When provided, the server skips re-fetching the queue from Athena "
+            "and uses these IDs directly for claim selection. "
+            "If omitted, the server falls back to fetching the queue."
+        ),
+    )
 
 
 class ClaimBatchResponse(BaseModel):
@@ -119,7 +128,7 @@ class ClaimBatchResponse(BaseModel):
 
 
 class BulkRecommendRequest(BaseModel):
-    """Request to generate AI recommendations for a batch of tickets."""
+    """Request to generate classifier recommendations for a batch of tickets."""
 
     ticket_ids: list[str] = Field(
         ...,
@@ -129,24 +138,6 @@ class BulkRecommendRequest(BaseModel):
     user_id: str | None = Field(
         default=None,
         description="User ID who initiated the recommendation batch (for WebSocket progress events).",
-    )
-    top_k_docs: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="Number of documentation articles to retrieve per ticket.",
-    )
-    top_k_tickets: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="Number of similar tickets to retrieve per ticket.",
-    )
-    max_tokens: int = Field(
-        default=2048,
-        ge=100,
-        le=4096,
-        description="Maximum tokens in each LLM response.",
     )
 
 

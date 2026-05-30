@@ -1,0 +1,18 @@
+{
+  "top1_accuracy": 0.806554736073703,
+  "top3_accuracy": 0.9109925239761372,
+  "top5_accuracy": 0.9334709391597654,
+  "num_classes": 226,
+  "train_size": 158906,
+  "test_size": 39727,
+  "train_time_seconds": 45.36278963088989,
+  "model_type": "SGDClassifier",
+  "loss": "modified_huber",
+  "class_weight": "balanced",
+  "excluded_groups": [
+    "--Please Select a Support Group--",
+    "Service Desk"
+  ],
+  "min_class_size": 50,
+  "sample_size": 200000
+}

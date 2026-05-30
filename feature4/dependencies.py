@@ -7,7 +7,6 @@ Imports core clients/services read-only from src/.
 
 # Read-only imports from core (never modify these source files)
 from src.clients.athena_client import AthenaClient
-from src.clients.databricks_client import DatabricksClient
 from src.config import get_settings
 from src.services.assignment import AssignmentService
 
@@ -20,16 +19,10 @@ def _get_athena_client() -> AthenaClient:
     return AthenaClient(get_settings())
 
 
-def _get_databricks_client() -> DatabricksClient:
-    """Provide a DatabricksClient instance."""
-    return DatabricksClient(get_settings())
-
-
 def _get_assignment_service() -> AssignmentService:
     """Provide an AssignmentService with injected clients."""
     return AssignmentService(
         athena_client=_get_athena_client(),
-        databricks_client=_get_databricks_client(),
     )
 
 

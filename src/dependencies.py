@@ -56,7 +56,6 @@ def get_assignment_service() -> AssignmentService:
     """Provide an AssignmentService with injected clients."""
     return AssignmentService(
         athena_client=get_athena_client(),
-        databricks_client=get_databricks_client(),
     )
 
 

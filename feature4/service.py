@@ -121,6 +121,8 @@ class BulkAssignmentService:
         self._assignment = assignment_service
         # In-memory lock state: ticket_id → user_id
         self._locks: dict[str, str] = {}
+        # Last known ticket IDs for incremental diff refresh
+        self._last_known_ticket_ids: set[str] = set()
 
     # ── Queue Management ──────────────────────────────────────────────
 
@@ -365,6 +367,72 @@ class BulkAssignmentService:
 
         return count
 
+    # ── Incremental Queue Refresh ─────────────────────────────────────
+
+    async def compute_queue_diff(
+        self,
+        tier_queue_name: str = "Validation",
+        statuses: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Fetch the current queue and compute an incremental diff against
+        the last known ticket set.
+
+        Returns only the tickets that were added and the IDs of tickets
+        that were removed since the last fetch. Updates the internal
+        ``_last_known_ticket_ids`` set so subsequent calls produce
+        correct diffs.
+
+        Args:
+            tier_queue_name: Tier queue name to query (default: Validation).
+            statuses: Ticket statuses to include.
+
+        Returns:
+            Dict with keys:
+                added   – list[QueueTicketSummary] (new tickets, serialised)
+                removed – list[str] (ticket IDs no longer in queue)
+                total   – int (current queue size)
+                locks   – dict[str, str] (current lock state)
+        """
+        queue_response = await self.fetch_queue(
+            tier_queue_name=tier_queue_name,
+            statuses=statuses,
+        )
+
+        current_ids = {t.id for t in queue_response.tickets}
+        previous_ids = self._last_known_ticket_ids
+
+        added_ids = current_ids - previous_ids
+        removed_ids = previous_ids - current_ids
+
+        added_tickets = [
+            t for t in queue_response.tickets if t.id in added_ids
+        ]
+
+        # Update the last-known set for next diff
+        self._last_known_ticket_ids = current_ids
+
+        # Clean up locks for removed tickets (they no longer exist in queue)
+        for tid in removed_ids:
+            self._locks.pop(tid, None)
+
+        return {
+            "added": added_tickets,
+            "removed": list(removed_ids),
+            "total": queue_response.total,
+            "locks": queue_response.locks,
+        }
+
+    def snapshot_ticket_ids(self, ticket_ids: set[str]) -> None:
+        """
+        Set the last-known ticket ID snapshot directly.
+
+        Called after the initial streaming queue load completes so that
+        the first ``compute_queue_diff`` call produces a correct diff
+        rather than treating every ticket as "added".
+        """
+        self._last_known_ticket_ids = set(ticket_ids)
+
     # ── Lock Management ───────────────────────────────────────────────
 
     def lock_tickets(self, ticket_ids: list[str], user_id: str) -> list[str]:
@@ -455,23 +523,17 @@ class BulkAssignmentService:
     async def batch_recommend(
         self,
         ticket_ids: list[str],
-        top_k_docs: int = 5,
-        top_k_tickets: int = 5,
-        max_tokens: int = 2048,
         on_processing: Callable[[str, int, int], Awaitable[None]] | None = None,
         on_result: Callable[[str, bool, int, int], Awaitable[None]] | None = None,
     ) -> BulkRecommendResponse:
         """
-        Generate AI recommendations for a batch of tickets.
+        Generate classifier recommendations for a batch of tickets.
 
         Processes tickets sequentially, reusing the Feature #3
-        AssignmentService for each ticket.
+        AssignmentService (TF-IDF classifier) for each ticket.
 
         Args:
             ticket_ids: List of ticket IDs to generate recommendations for.
-            top_k_docs: Docs to retrieve per ticket.
-            top_k_tickets: Similar tickets to retrieve per ticket.
-            max_tokens: Max LLM tokens per recommendation.
             on_processing: Optional async callback(ticket_id, current, total)
                 called before each ticket starts processing.
             on_result: Optional async callback(ticket_id, success, current, total)
@@ -494,9 +556,6 @@ class BulkAssignmentService:
             try:
                 result = await self._assignment.recommend_assignment(
                     ticket_id=ticket_id,
-                    top_k_docs=top_k_docs,
-                    top_k_tickets=top_k_tickets,
-                    max_tokens=max_tokens,
                 )
                 recommendations.append(
                     TicketRecommendation(
@@ -853,10 +912,12 @@ class BulkAssignmentService:
 
 
 def _fallback_recommendation() -> AssignmentRecommendation:
-    """Create a fallback recommendation when AI generation fails."""
+    """Create a fallback recommendation when classifier fails."""
     return AssignmentRecommendation(
         support_group_name="Service Desk",
         support_group_guid="ec749166-07c5-eba6-35ba-bd32fa8ed7d2",
-        priority="Medium",
+        confidence=0.0,
+        method="classifier",
         rationale="Recommendation generation failed. Defaulting to Service Desk.",
+        alternatives=[],
     )

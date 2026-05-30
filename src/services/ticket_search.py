@@ -134,9 +134,9 @@ class TicketSearchService:
                 None,
                 self._databricks.find_similar_by_embedding,
                 query_embedding,
-                "scratchpad.aslanuka.ir_embeddings",
-                "ticket_embedding",
-                "id",
+                "hive_metastore.embeddings_db.ticket_embeddings",
+                "embedding",
+                "Id",
                 top_k,
             ),
             loop.run_in_executor(
@@ -176,41 +176,51 @@ class TicketSearchService:
         top_k: int = 10,
     ) -> SimilarTicketResponse:
         """
-        Find tickets similar to a given ticket ID using its pre-computed embedding.
+        Find tickets similar to a given ticket ID.
 
-        1. Look up the ticket's embedding from ir_embeddings
-        2. Run cosine similarity against all other ticket embeddings
+        1. Fetch the ticket from Athena (auto-detects IR vs SR from prefix)
+        2. Build search text from title + description
+        3. Generate an embedding on-the-fly via Databricks GTE-Large-EN
+        4. Run cosine similarity against all ticket embeddings in ir_embeddings
 
         Args:
-            ticket_id: Ticket ID (e.g., 'IR1959493').
+            ticket_id: Ticket ID (e.g., 'IR1959493' or 'SR10393291').
             top_k: Number of similar tickets to return.
 
         Returns:
             SimilarTicketResponse with the source ticket ID and similar matches.
 
         Raises:
-            ValueError: If no embedding is found for the given ticket ID.
+            ValueError: If the ticket is not found in Athena or has no usable content.
         """
+        # Step 1: Fetch ticket from Athena (handles IR vs SR via prefix)
+        ticket = await self._athena.get_ticket(ticket_id)
+
+        if not ticket:
+            raise ValueError(f"Ticket '{ticket_id}' not found in Athena.")
+
+        # Step 2: Build search text from title and description
+        title = ticket.get("title") or ""
+        description = ticket.get("description") or ""
+        search_text = f"{title} {description}".strip()
+
+        if not search_text:
+            raise ValueError(
+                f"Ticket '{ticket_id}' has no title or description to generate an embedding."
+            )
+
+        # Step 3: Generate embedding on-the-fly
+        embedding = await self._databricks.generate_embedding(search_text)
+
+        # Step 4: Find similar tickets (request top_k + 1 to exclude self)
         loop = asyncio.get_event_loop()
-
-        # Step 1: Get the ticket's embedding
-        embedding = await loop.run_in_executor(
-            None,
-            self._databricks.get_ticket_embedding,
-            ticket_id,
-        )
-
-        if embedding is None:
-            raise ValueError(f"No embedding found for ticket '{ticket_id}'.")
-
-        # Step 2: Find similar tickets (request top_k + 1 to exclude self)
         results = await loop.run_in_executor(
             None,
             self._databricks.find_similar_by_embedding,
             embedding,
-            "scratchpad.aslanuka.ir_embeddings",
-            "ticket_embedding",
-            "id",
+            "hive_metastore.embeddings_db.ticket_embeddings",
+            "embedding",
+            "Id",
             top_k + 1,
         )
 

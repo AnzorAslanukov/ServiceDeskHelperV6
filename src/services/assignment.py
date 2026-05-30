@@ -1,33 +1,32 @@
 """
 Assignment Service — business logic for Feature #3: Ticket Assignment Recommendation.
 
-Workflow:
+Simplified pipeline using TF-IDF classifier (replaces LLM):
 1. Fetch the ticket from Athena by ID
-2. Build a search query from the ticket's title + description
-3. Semantic search for relevant documentation and similar tickets
-4. Call the LLM with ticket details + context + support group mappings
-5. Parse the structured JSON recommendation
+2. Check specific triage rules (12 data-driven patterns)
+3. Check Service Desk triage rules (password reset, MyChart, etc.)
+4. Run TF-IDF classifier for support group prediction
+5. Resolve GUID from support group name
+6. Return recommendation with confidence and alternatives
 
 Support groups are loaded from exploration/output/assignable_support_groups.json,
 which contains all 309 IR and 310 SR assignable groups (disabled groups excluded).
 If the JSON file is unavailable, a minimal fallback set is used.
 """
 
-import asyncio
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from src.clients.athena_client import AthenaClient
-from src.clients.databricks_client import DatabricksClient
 from src.models.assignment import (
     AssignmentRecommendation,
     AssignmentResponse,
+    ClassifierPrediction,
     TicketInfo,
 )
-from src.models.chat import SourceCitation, SourceType
+from src.services.ticket_classifier import TicketClassifier, get_ticket_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +62,6 @@ def load_support_groups(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """
     Load assignable support groups from the JSON file.
-
-    Args:
-        json_path: Path to the JSON file. Defaults to the standard location.
 
     Returns:
         Tuple of (ir_support_groups, sr_support_groups) dicts mapping
@@ -104,9 +100,7 @@ def load_support_groups(
 
     except FileNotFoundError:
         logger.warning(
-            "Support groups JSON not found at %s. Using fallback set. "
-            "Run exploration/explore_assignable_support_groups.py to generate it.",
-            path,
+            "Support groups JSON not found at %s. Using fallback set.", path
         )
         return (
             _FALLBACK_IR_SUPPORT_GROUPS.copy(),
@@ -125,64 +119,281 @@ def load_support_groups(
 # Load at module import time
 IR_SUPPORT_GROUPS, SR_SUPPORT_GROUPS = load_support_groups()
 
-ASSIGNMENT_SYSTEM_PROMPT = """\
-You are an AI assistant for the Penn Medicine / UPHS IT Service Desk. \
-Your task is to analyze a ticket and recommend the best support group assignment and priority level.
 
-You must respond with ONLY a valid JSON object (no markdown, no code fences, no extra text) \
-with exactly these keys:
-- "support_group_name": The name of the recommended support group from the list below
-- "support_group_guid": The GUID of the recommended support group from the list below
-- "priority": The recommended priority level
-- "rationale": A brief explanation (2-4 sentences) of why you chose this group and priority
+# ═══════════════════════════════════════════════════════════════════════
+# SERVICE DESK TRIAGE RULES
+# ═══════════════════════════════════════════════════════════════════════
+# These patterns should ALWAYS route to Service Desk.
+# Based on benchmark: 20% of SD tickets were over-routed to specialized groups.
 
-AVAILABLE SUPPORT GROUPS (name → GUID):
-{support_groups}
+SERVICE_DESK_TRIAGE_PATTERNS = [
+    {
+        "name": "password_reset",
+        "keywords": ["password reset", "pw reset", "reset password", "password unlock",
+                     "account locked", "account lockout", "login blocked",
+                     "inactive for too many days", "blocked out"],
+        "negative": ["pennchart access", "epic access", "provisioning"],
+    },
+    {
+        "name": "mypennmedicine",
+        "keywords": ["mypennmedicine", "mychart", "patient portal",
+                     "mypennchart", "my penn medicine"],
+        "negative": [],
+    },
+    {
+        "name": "general_inquiry",
+        "keywords": ["caller decided to end", "ended call", "hung up",
+                     "general inquiry", "general question"],
+        "negative": [],
+    },
+    {
+        "name": "basic_account",
+        "keywords": ["sd password reset", "pennid", "dob verified",
+                     "username verified", "verification questions"],
+        "negative": ["pennchart", "epic", "provisioning"],
+    },
+]
 
-PRIORITY GUIDANCE:
-- For incidents (IR): Use numeric priority 1 (critical) through 4 (low). \
-Consider impact and urgency.
-- For service requests (SR): Use "Immediate", "High", "Medium", or "Low". \
-Consider business impact and time sensitivity.
 
-LOCATION-BASED ROUTING RULES:
-When the ticket involves hardware, desktop, printer, workstation, network jack, phone, \
-or end-user support issues, the ticket's physical location determines which EUS sub-group \
-to assign. ALWAYS match the ticket location to the correct location-specific sub-group:
+# ═══════════════════════════════════════════════════════════════════════
+# SPECIFIC TRIAGE RULES (Phase 2c-2f)
+# ═══════════════════════════════════════════════════════════════════════
+# Data-driven rules based on actual ticket text analysis from benchmark.
+# These run BEFORE Service Desk triage to prevent false positives.
 
-- Location starts with "CAMPUS" → EUS\\Campus
-- Location starts with "CCH" → EUS\\CCH
-- Location starts with "HUP Cedar" → EUS\\HUP Cedar
-- Location starts with "HUP Pavilion" → EUS\\HUP\\HUP Pavilion
-- Location starts with "HUP" (not Cedar/Pavilion) → EUS\\HUP
-- Location starts with "Princeton" or "MCP" → EUS\\MCP
-- Location starts with "PAH" → EUS\\PaH
-- Location starts with "PCAM" → EUS\\PCAM
-- Location starts with "PMaH" → check sub-location for BALA, KOP, or West Chester
-- Location starts with "PMUC" → EUS\\PMUC
-- Location starts with "PPMC" → EUS\\PPMC
-- Location starts with "RITT" → EUS\\RITT
-- Location starts with "Remote sites" or "RSI" → EUS\\RSI
-- Location starts with "Doylestown" or "PMDH" → PMDH Dispatch\\PMDH EUS
-- Location starts with "LGH" or "LGHP" → LGH\\Shared Services (LGH)\\PC Technicians (LGH) \
-(choose Hospital, Commercial, Road, SOP, or Printing sub-group as appropriate)
-- Location is "Community Connect" → EUS\\RSI (treated as remote site)
-- Location is "Remote User" → EUS\\Campus (default for remote workers)
-- Location is "Data Center" → Technology\\Infrastructure (not EUS)
+SPECIFIC_TRIAGE_PATTERNS = [
+    {
+        "name": "security_engineering_lgh_ldap",
+        "target_group": "Security Engineering",
+        "keywords": ["lha.org", "lgh.org:389"],
+        "context_keywords": [],
+        "negative": ["hris support form"],
+        "description": "LGH LDAP errors → Security Engineering (not Kronos).",
+    },
+    {
+        "name": "security_engineering_estar_lgh",
+        "target_group": "Security Engineering",
+        "keywords": ["estar portal", "estar timestamp", "estar workforce",
+                     "e-star portal", "e star portal"],
+        "context_keywords": ["lancaster", "lgh"],
+        "negative": ["hris support form"],
+        "description": "eStar Portal/Timestamp/Workforce at LGH → Security Engineering.",
+    },
+    {
+        "name": "hris_estar_kronos",
+        "target_group": "Kronos",
+        "keywords": ["hris support form"],
+        "context_keywords": ["estar", "e-star", "e star"],
+        "negative": ["transfer", "reporting change", "network access", "email access",
+                     "remove employee", "no longer employee"],
+        "description": "HRIS Support Form + eStar context → Kronos.",
+    },
+    {
+        "name": "iam_authentication",
+        "target_group": "IAM - Single Sign On",
+        "keywords": ["ms authenticator", "microsoft authenticator",
+                     "authenticator app", "authentication loop",
+                     "ms authentiator", "microsoft authentiator",
+                     "prompting for authenticator", "prompting for ms authenticator"],
+        "context_keywords": [],
+        "negative": ["duo enrollment", "duo setup", "hardware repair", "hardware support"],
+        "description": "MS Authenticator / authentication loop → IAM-SSO.",
+    },
+    {
+        "name": "hris_form_kronos",
+        "target_group": "Kronos",
+        "keywords": ["hris support form"],
+        "context_keywords": ["paid time off", "parental time", "parental leave",
+                            "fmla", "ppt", "pto"],
+        "negative": ["transfer", "reporting change", "network access", "email access",
+                     "remove employee", "no longer employee"],
+        "description": "HRIS forms about PTO/leave → Kronos.",
+    },
+    {
+        "name": "estar_login_kronos",
+        "target_group": "Kronos",
+        "keywords": ["estar", "e-star", "e star"],
+        "context_keywords": ["log in", "login", "logon", "log on", "sign in",
+                            "unable to access", "unable to log", "cannot log",
+                            "can't log", "can not log"],
+        "negative": ["lha.org", "lgh.org:389", "estar portal", "estar timestamp",
+                     "estar workforce", "e-star portal", "e star portal",
+                     "hris support form"],
+        "description": "Generic eStar login issues → Kronos (Security Eng rules take priority).",
+    },
+    {
+        "name": "hup_west_ravdin",
+        "target_group": "HUP West",
+        "keywords": [],
+        "context_keywords": [],
+        "negative": [],
+        "location_keywords": ["ravdin", "rhoads", "maloney"],
+        "description": "RAVDIN/RHOADS/MALONEY buildings → HUP West.",
+    },
+    {
+        "name": "aria_upgrade_command_center",
+        "target_group": "Command Center Support",
+        "keywords": ["aria upgrade", "aria v18", "aria issue"],
+        "context_keywords": [],
+        "negative": ["billing code", "missing provider"],
+        "description": "Aria upgrade/version issues → Command Center Support.",
+    },
+    {
+        "name": "riskonnect_is_event_isaac",
+        "target_group": "ISAAC",
+        "keywords": ["riskonnect event - information systems"],
+        "context_keywords": [],
+        "negative": [],
+        "description": "Riskonnect IS events → ISAAC.",
+    },
+    {
+        "name": "riskonnect_privacy_isaac",
+        "target_group": "ISAAC",
+        "keywords": ["riskonnect event - privacy"],
+        "context_keywords": [],
+        "negative": [],
+        "description": "Riskonnect privacy events → ISAAC.",
+    },
+    {
+        "name": "windows_defender_lockout_cyber",
+        "target_group": "Cyber Defense and Operations",
+        "keywords": ["windows defender", "defender has locked", "defender locked"],
+        "context_keywords": [],
+        "negative": [],
+        "description": "Windows Defender lockouts → Cyber Defense and Operations.",
+    },
+    {
+        "name": "pcam_hardware_location",
+        "target_group": "PCAM",
+        "keywords": [],
+        "context_keywords": [],
+        "negative": [],
+        "location_keywords": ["pcam", "s. pavillion", "south pavilion"],
+        "description": "Hardware tickets at PCAM/S. Pavillion → PCAM.",
+    },
+]
 
-For non-EUS issues at specific locations, location still matters:
-- LGH/LGHP locations with Epic issues → LGH\\Epic (LGH)\\... sub-groups
-- LGH/LGHP locations with network issues → LGH\\Technical Services (LGH)\\Network (LGH)
-- PMDH locations with network issues → PMDH Dispatch\\PMDH Network Team
-- PMDH locations with application issues → PMDH Dispatch\\PMDH Legacy Applications or PMDH ECW
-- All other locations → use the standard (non-location-specific) groups
 
-IMPORTANT: The location field is CRITICAL for EUS-type issues. Never default to EUS\\Campus \
-when the ticket location clearly indicates a different site. Always match the ticket's \
-location to the correct location-specific sub-group.
+# ═══════════════════════════════════════════════════════════════════════
+# TRIAGE FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════
 
-CONTEXT FROM KNOWLEDGE BASE AND SIMILAR TICKETS:
-{context}"""
+
+def check_service_desk_triage(title: str, description: str) -> bool:
+    """
+    Check if a ticket matches Service Desk triage patterns.
+    Returns True if the ticket should be assigned to Service Desk.
+    """
+    text = f"{title} {description}".lower()
+
+    for pattern in SERVICE_DESK_TRIAGE_PATTERNS:
+        has_positive = any(kw in text for kw in pattern["keywords"])
+        if not has_positive:
+            continue
+
+        has_negative = any(kw in text for kw in pattern.get("negative", []))
+        if has_negative:
+            continue
+
+        return True
+
+    return False
+
+
+def check_specific_triage(
+    title: str, description: str, location: str, support_groups: dict[str, str]
+) -> tuple[str, str] | None:
+    """
+    Check if a ticket matches specific triage patterns (Phase 2c-2f).
+    Returns (group_name, guid) if matched, None otherwise.
+    """
+    text = f"{title} {description}".lower()
+    location_lower = (location or "").lower()
+
+    for pattern in SPECIFIC_TRIAGE_PATTERNS:
+        location_kws = pattern.get("location_keywords", [])
+        primary_kws = pattern.get("keywords", [])
+
+        if location_kws and not primary_kws:
+            # Pure location-based rule
+            has_location = any(kw in location_lower for kw in location_kws)
+            if not has_location:
+                continue
+        else:
+            # Standard text-based matching
+            has_primary = any(kw in text for kw in primary_kws)
+            if not has_primary:
+                continue
+
+            # If context_keywords exist, at least one must match (text OR location)
+            context_kws = pattern.get("context_keywords", [])
+            if context_kws:
+                has_context = any(
+                    kw in text or kw in location_lower for kw in context_kws
+                )
+                if not has_context:
+                    continue
+
+        # Check negatives
+        has_negative = any(kw in text for kw in pattern.get("negative", []))
+        if has_negative:
+            continue
+
+        # Find the target group in support_groups
+        target = pattern["target_group"]
+        if target in support_groups:
+            return target, support_groups[target]
+
+        # Try leaf match (e.g., "Kronos" matches "Applications\\...\\Kronos")
+        target_lower = target.lower()
+        for name, guid in support_groups.items():
+            if name.lower() == target_lower or name.lower().endswith("\\" + target_lower):
+                return name, guid
+
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# GUID RESOLUTION
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def resolve_group_guid(
+    predicted_group: str, support_groups: dict[str, str]
+) -> str:
+    """
+    Resolve a classifier-predicted group name to its GUID.
+
+    The classifier predicts short/leaf names (e.g., "HUP", "Kronos").
+    We need to find the matching full path in the support_groups dict.
+
+    Returns the GUID if found, empty string otherwise.
+    """
+    if not predicted_group:
+        return ""
+
+    # Direct match
+    if predicted_group in support_groups:
+        return support_groups[predicted_group]
+
+    # Leaf match: classifier predicts "HUP" → matches "EUS\\HUP"
+    predicted_lower = predicted_group.lower()
+    for full_name, guid in support_groups.items():
+        leaf = full_name.rsplit("\\", 1)[-1].strip()
+        if leaf.lower() == predicted_lower:
+            return guid
+
+    # Partial/contains match
+    for full_name, guid in support_groups.items():
+        if predicted_lower in full_name.lower():
+            return guid
+
+    return ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# ASSIGNMENT SERVICE
+# ═══════════════════════════════════════════════════════════════════════
 
 
 class AssignmentService:
@@ -191,33 +402,39 @@ class AssignmentService:
     def __init__(
         self,
         athena_client: AthenaClient,
-        databricks_client: DatabricksClient,
+        classifier: TicketClassifier | None = None,
     ) -> None:
         self._athena = athena_client
-        self._databricks = databricks_client
+        self._classifier = classifier or get_ticket_classifier()
 
     async def recommend_assignment(
         self,
         ticket_id: str,
-        top_k_docs: int = 5,
-        top_k_tickets: int = 5,
-        max_tokens: int = 2048,
+        top_k: int = 5,
     ) -> AssignmentResponse:
         """
-        Analyze a ticket and recommend a support group assignment and priority.
+        Analyze a ticket and recommend a support group assignment.
+
+        Pipeline:
+        1. Validate and fetch ticket from Athena
+        2. Check specific triage rules (12 data-driven patterns)
+        3. Check Service Desk triage rules
+        4. Run TF-IDF classifier for prediction
+        5. Resolve GUID and return recommendation
 
         Args:
             ticket_id: Ticket ID (e.g., 'IR1959493' or 'SR1959584').
-            top_k_docs: Number of documentation articles to retrieve.
-            top_k_tickets: Number of similar tickets to retrieve.
-            max_tokens: Maximum tokens in the LLM response.
+            top_k: Number of alternative predictions to include.
 
         Returns:
-            AssignmentResponse with ticket info, recommendation, and sources.
+            AssignmentResponse with ticket info and recommendation.
 
         Raises:
             ValueError: If the ticket ID prefix is not recognized.
         """
+        # Step 0: Validate and normalize the ticket ID
+        ticket_id = self._validate_and_normalize_ticket_id(ticket_id)
+
         # Step 1: Determine ticket type and fetch
         ticket_type = self._get_ticket_type(ticket_id)
         raw_ticket = await self._athena.get_ticket(ticket_id)
@@ -225,281 +442,184 @@ class AssignmentService:
         # Step 2: Extract ticket info
         ticket_info = self._extract_ticket_info(raw_ticket, ticket_id, ticket_type)
 
-        # Step 3: Build search query from ticket content
-        search_text = self._build_search_text(ticket_info)
-
-        # Step 4: Generate embedding and run semantic search
-        query_embedding = await self._databricks.generate_embedding(search_text)
-
-        loop = asyncio.get_event_loop()
-        doc_results, ticket_results = await asyncio.gather(
-            loop.run_in_executor(
-                None,
-                self._databricks.find_similar_documentation,
-                query_embedding,
-                top_k_docs,
-            ),
-            loop.run_in_executor(
-                None,
-                self._databricks.find_similar_by_embedding,
-                query_embedding,
-                "scratchpad.aslanuka.ir_embeddings",
-                "ticket_embedding",
-                "id",
-                top_k_tickets,
-            ),
-        )
-
-        # Step 5: Build sources
-        sources = self._build_sources(doc_results, ticket_results)
-
-        # Step 6: Build LLM prompt and call
+        # Select support groups for this ticket type
         support_groups = IR_SUPPORT_GROUPS if ticket_type == "incident" else SR_SUPPORT_GROUPS
-        context = self._build_context(doc_results, ticket_results)
-        messages = self._build_llm_messages(
-            ticket_info=ticket_info,
-            support_groups=support_groups,
-            context=context,
+
+        # Step 3a: Check specific triage rules (Phase 2c-2f)
+        specific_match = check_specific_triage(
+            ticket_info.title or "",
+            ticket_info.description or "",
+            ticket_info.location or "",
+            support_groups,
+        )
+        if specific_match:
+            group_name, group_guid = specific_match
+            recommendation = AssignmentRecommendation(
+                support_group_name=group_name,
+                support_group_guid=group_guid,
+                confidence=1.0,
+                method="triage_rule",
+                rationale=f"Matched specific triage rule for '{group_name}'. "
+                          "This ticket pattern is routed directly based on known assignment patterns.",
+                alternatives=[],
+            )
+            return AssignmentResponse(
+                ticket=ticket_info,
+                recommendation=recommendation,
+            )
+
+        # Step 3b: Check Service Desk triage rules
+        if check_service_desk_triage(
+            ticket_info.title or "",
+            ticket_info.description or "",
+        ):
+            sd_guid = support_groups.get("Service Desk", "")
+            recommendation = AssignmentRecommendation(
+                support_group_name="Service Desk",
+                support_group_guid=sd_guid,
+                confidence=1.0,
+                method="triage_rule",
+                rationale="Matched Service Desk triage rule: ticket matches password reset, "
+                          "MyChart, account lockout, or general inquiry pattern.",
+                alternatives=[],
+            )
+            return AssignmentResponse(
+                ticket=ticket_info,
+                recommendation=recommendation,
+            )
+
+        # Step 4: Run TF-IDF classifier
+        predictions = self._classifier.predict(
+            title=ticket_info.title or "",
+            description=ticket_info.description or "",
+            ticket_type="Incident" if ticket_type == "incident" else "Service Request",
+            location=ticket_info.location or "",
+            classification=ticket_info.classification or "",
+            source=ticket_info.source or "",
+            top_k=top_k,
         )
 
-        llm_response = await self._databricks.call_llm(messages, max_tokens=max_tokens)
+        if not predictions:
+            # Fallback: assign to Service Desk
+            sd_guid = support_groups.get("Service Desk", "")
+            recommendation = AssignmentRecommendation(
+                support_group_name="Service Desk",
+                support_group_guid=sd_guid,
+                confidence=0.0,
+                method="classifier",
+                rationale="Classifier returned no predictions. Defaulting to Service Desk.",
+                alternatives=[],
+            )
+            return AssignmentResponse(
+                ticket=ticket_info,
+                recommendation=recommendation,
+            )
 
-        # Step 7: Parse recommendation
-        recommendation = self._parse_recommendation(llm_response, support_groups)
+        # Step 5: Resolve GUID for top prediction
+        top_prediction = predictions[0]
+        top_group = top_prediction["support_group"]
+        top_confidence = top_prediction["confidence"]
+        top_guid = resolve_group_guid(top_group, support_groups)
+
+        # Build alternatives (predictions 2 through N)
+        alternatives = [
+            ClassifierPrediction(
+                support_group=p["support_group"],
+                confidence=p["confidence"],
+            )
+            for p in predictions[1:]
+            if p["confidence"] > 0.001  # Only include meaningful alternatives
+        ]
+
+        recommendation = AssignmentRecommendation(
+            support_group_name=top_group,
+            support_group_guid=top_guid,
+            confidence=top_confidence,
+            method="classifier",
+            rationale=f"TF-IDF classifier prediction with {top_confidence:.1%} confidence.",
+            alternatives=alternatives,
+        )
 
         return AssignmentResponse(
             ticket=ticket_info,
             recommendation=recommendation,
-            sources=sources,
         )
 
     # ── Private Helpers ───────────────────────────────────────────────
 
     @staticmethod
+    def _validate_and_normalize_ticket_id(ticket_id: str) -> str:
+        """
+        Validate and normalize a ticket ID.
+
+        Strips whitespace, uppercases, and checks format.
+        Returns the normalized ticket ID (e.g., 'IR1959493').
+
+        Raises:
+            ValueError: With a specific, user-friendly message for each error case.
+        """
+        if not ticket_id or not ticket_id.strip():
+            raise ValueError(
+                "Ticket ID is required. Please enter a ticket ID "
+                "(e.g., 'IR1959493' or 'SR1959584')."
+            )
+
+        normalized = ticket_id.strip().upper()
+
+        valid_prefixes = ("IR", "SR")
+        if not any(normalized.startswith(p) for p in valid_prefixes):
+            raise ValueError(
+                f"Ticket ID '{normalized}' must start with 'IR' (Incident) or 'SR' (Service Request). "
+                f"Example: 'IR1959493' or 'SR1959584'."
+            )
+
+        numeric_part = normalized[2:]
+        if not numeric_part.isdigit():
+            raise ValueError(
+                f"Ticket ID '{normalized}' has an invalid format. "
+                f"Expected format: prefix + numbers (e.g., 'IR1959493')."
+            )
+
+        return normalized
+
+    @staticmethod
     def _get_ticket_type(ticket_id: str) -> str:
         """Determine ticket type from the ID prefix."""
-        upper_id = ticket_id.upper()
-        if upper_id.startswith("IR"):
+        if ticket_id.startswith("IR"):
             return "incident"
-        elif upper_id.startswith("SR"):
+        elif ticket_id.startswith("SR"):
             return "servicerequest"
         else:
-            raise ValueError(
-                f"Unknown ticket type prefix in '{ticket_id}'. Expected IR or SR."
-            )
+            raise ValueError(f"Unknown ticket type prefix in '{ticket_id}'.")
 
-    @staticmethod
-    def _format_datetime(raw_date: str | None) -> str | None:
-        """Format an ISO 8601 datetime string to 'HH:MM MM/DD/YYYY'."""
-        if not raw_date:
-            return None
-        try:
-            dt = datetime.fromisoformat(raw_date)
-            return dt.strftime("%H:%M %m/%d/%Y")
-        except (ValueError, TypeError):
-            return raw_date
-
-    @staticmethod
     def _extract_ticket_info(
-        raw: dict[str, Any],
-        ticket_id: str,
-        ticket_type: str,
+        self, raw_ticket: dict[str, Any], ticket_id: str, ticket_type: str
     ) -> TicketInfo:
-        """Extract a TicketInfo from a raw Athena ticket response."""
-        affected_user_raw = raw.get("affectedUser")
-        affected_user = None
-        affected_user_title = None
-        if isinstance(affected_user_raw, dict):
-            affected_user = affected_user_raw.get("displayName") or affected_user_raw.get("userName")
-            affected_user_title = affected_user_raw.get("title")
-
-        support_group = raw.get("supportGroup")
-        if isinstance(support_group, dict):
-            support_group = support_group.get("name") or support_group.get("displayName")
-
-        status = raw.get("status")
-        if isinstance(status, dict):
-            status = status.get("name") or status.get("displayName")
-
-        location = raw.get("location")
-        if isinstance(location, dict):
-            location = location.get("name") or location.get("displayName")
-
-        priority = raw.get("priority")
-        if isinstance(priority, dict):
-            priority = priority.get("name") or priority.get("displayName")
+        """Extract relevant fields from the raw Athena ticket response."""
+        # Handle nested field access
+        def get_field(data: dict, *keys: str) -> Any:
+            """Try multiple possible field names."""
+            for key in keys:
+                if key in data:
+                    val = data[key]
+                    # Handle dict values with displayName
+                    if isinstance(val, dict):
+                        return val.get("displayName", val.get("name", str(val)))
+                    return val
+            return None
 
         return TicketInfo(
-            id=raw.get("id", ticket_id),
+            id=ticket_id,
             ticket_type=ticket_type,
-            title=raw.get("title"),
-            description=raw.get("description"),
-            status=status,
-            priority=priority,
-            support_group=support_group,
-            affected_user=affected_user,
-            affected_user_title=affected_user_title,
-            location=location,
-            created_date=AssignmentService._format_datetime(raw.get("createdDate")),
+            title=get_field(raw_ticket, "shortDescription", "title", "summary"),
+            description=get_field(raw_ticket, "description", "details"),
+            status=get_field(raw_ticket, "status"),
+            priority=get_field(raw_ticket, "priority"),
+            support_group=get_field(raw_ticket, "tierQueue", "supportGroup", "assignedGroup"),
+            affected_user=get_field(raw_ticket, "affectedUser", "requestedFor"),
+            affected_user_title=get_field(raw_ticket, "affectedUserTitle"),
+            location=get_field(raw_ticket, "location"),
+            classification=get_field(raw_ticket, "classificationPath", "classification"),
+            source=get_field(raw_ticket, "source"),
+            created_date=get_field(raw_ticket, "createdDate", "createDate"),
         )
-
-    @staticmethod
-    def _build_search_text(ticket_info: TicketInfo) -> str:
-        """Build a search query string from ticket title and description."""
-        parts: list[str] = []
-        if ticket_info.title:
-            parts.append(ticket_info.title)
-        if ticket_info.description:
-            # Limit description length for embedding
-            desc = ticket_info.description[:500]
-            parts.append(desc)
-        return " ".join(parts) if parts else "IT support ticket"
-
-    @staticmethod
-    def _build_sources(
-        doc_results: list[dict[str, Any]],
-        ticket_results: list[dict[str, Any]],
-    ) -> list[SourceCitation]:
-        """Build source citations from retrieval results."""
-        sources: list[SourceCitation] = []
-
-        for doc in doc_results:
-            content = doc.get("content", "")
-            preview = content[:200] + "..." if len(content) > 200 else content
-            sources.append(
-                SourceCitation(
-                    type=SourceType.documentation,
-                    title=doc.get("title", "Untitled"),
-                    similarity=doc.get("similarity", 0.0),
-                    content_preview=preview,
-                    notebook=doc.get("notebook"),
-                    section=doc.get("section"),
-                )
-            )
-
-        for ticket in ticket_results:
-            sources.append(
-                SourceCitation(
-                    type=SourceType.ticket,
-                    title=ticket.get("id", "Unknown"),
-                    similarity=ticket.get("similarity", 0.0),
-                )
-            )
-
-        return sources
-
-    @staticmethod
-    def _build_context(
-        doc_results: list[dict[str, Any]],
-        ticket_results: list[dict[str, Any]],
-    ) -> str:
-        """Build the context string from retrieval results."""
-        parts: list[str] = []
-
-        if doc_results:
-            parts.append("=== KNOWLEDGE BASE DOCUMENTATION ===")
-            for i, doc in enumerate(doc_results, 1):
-                title = doc.get("title", "Untitled")
-                section = doc.get("section", "Unknown Section")
-                notebook = doc.get("notebook", "unknown")
-                content = doc.get("content", "")
-                similarity = doc.get("similarity", 0.0)
-                parts.append(
-                    f"\n--- Document {i} (similarity: {similarity:.3f}) ---\n"
-                    f"Notebook: {notebook} | Section: {section} | Title: {title}\n"
-                    f"{content}"
-                )
-
-        if ticket_results:
-            parts.append("\n=== SIMILAR HISTORICAL TICKETS ===")
-            for i, ticket in enumerate(ticket_results, 1):
-                ticket_id = ticket.get("id", "Unknown")
-                similarity = ticket.get("similarity", 0.0)
-                parts.append(f"- Ticket {ticket_id} (similarity: {similarity:.3f})")
-
-        if not parts:
-            return "No relevant documentation or similar tickets were found."
-
-        return "\n".join(parts)
-
-    @staticmethod
-    def _build_llm_messages(
-        ticket_info: TicketInfo,
-        support_groups: dict[str, str],
-        context: str,
-    ) -> list[dict[str, str]]:
-        """Build the message list for the LLM call."""
-        # Format support groups for the prompt
-        sg_lines = "\n".join(
-            f"  - {name}: {guid}" for name, guid in support_groups.items()
-        )
-
-        system_content = ASSIGNMENT_SYSTEM_PROMPT.format(
-            support_groups=sg_lines,
-            context=context,
-        )
-
-        # Build the user message with ticket details
-        ticket_details = (
-            f"Ticket ID: {ticket_info.id}\n"
-            f"Type: {ticket_info.ticket_type}\n"
-            f"Title: {ticket_info.title or 'N/A'}\n"
-            f"Description: {ticket_info.description or 'N/A'}\n"
-            f"Current Status: {ticket_info.status or 'N/A'}\n"
-            f"Current Priority: {ticket_info.priority or 'N/A'}\n"
-            f"Current Support Group: {ticket_info.support_group or 'N/A'}\n"
-            f"Affected User: {ticket_info.affected_user or 'N/A'}\n"
-            f"Location: {ticket_info.location or 'N/A'}\n"
-            f"Created Date: {ticket_info.created_date or 'N/A'}"
-        )
-
-        user_content = (
-            f"Please analyze the following ticket and recommend the best support group "
-            f"assignment and priority level.\n\n{ticket_details}"
-        )
-
-        return [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ]
-
-    @staticmethod
-    def _parse_recommendation(
-        llm_response: str,
-        support_groups: dict[str, str],
-    ) -> AssignmentRecommendation:
-        """
-        Parse the LLM's JSON response into an AssignmentRecommendation.
-
-        Falls back to a best-effort extraction if JSON parsing fails.
-        """
-        # Strip any markdown code fences the LLM might add despite instructions
-        cleaned = llm_response.strip()
-        if cleaned.startswith("```"):
-            # Remove opening fence (with optional language tag)
-            first_newline = cleaned.index("\n") if "\n" in cleaned else 3
-            cleaned = cleaned[first_newline + 1 :]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-
-        try:
-            data = json.loads(cleaned)
-            return AssignmentRecommendation(
-                support_group_name=data.get("support_group_name", "Service Desk"),
-                support_group_guid=data.get(
-                    "support_group_guid",
-                    support_groups.get("Service Desk", ""),
-                ),
-                priority=data.get("priority", "Medium"),
-                rationale=data.get("rationale", "Unable to parse rationale from LLM response."),
-            )
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            logger.warning("Failed to parse LLM JSON response: %s. Raw: %s", exc, llm_response[:200])
-            # Fallback: return a default recommendation with the raw response as rationale
-            return AssignmentRecommendation(
-                support_group_name="Service Desk",
-                support_group_guid=support_groups.get("Service Desk", ""),
-                priority="Medium",
-                rationale=f"LLM response could not be parsed as JSON. Raw response: {llm_response[:500]}",
-            )

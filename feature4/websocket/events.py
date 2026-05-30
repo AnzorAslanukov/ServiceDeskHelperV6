@@ -34,6 +34,11 @@ def state_sync_event(locks: dict[str, str]) -> dict:
     return WSStateSyncEvent(locks=locks).model_dump()
 
 
+# Note: user_colors is added to state_sync, presence_join, and presence_leave
+# events at the call site in router.py (not in the factory functions) because
+# the color map comes from ConnectionManager, not from the event models.
+
+
 # ── Recommendation Progress Events ────────────────────────────────────
 
 
@@ -117,4 +122,61 @@ def queue_loading_complete_event(total: int, locks: dict[str, str], user_id: str
         "total": total,
         "locks": locks,
         "user_id": user_id,
+    }
+
+
+# ── Presence Events ───────────────────────────────────────────────────
+
+
+def presence_join_event(user_id: str, users: list[str], user_colors: dict[str, str] | None = None) -> dict:
+    """Create a PRESENCE_JOIN event when a user connects."""
+    evt: dict = {
+        "event": "presence_join",
+        "user_id": user_id,
+        "users": users,
+    }
+    if user_colors is not None:
+        evt["user_colors"] = user_colors
+    return evt
+
+
+def presence_leave_event(user_id: str, users: list[str], user_colors: dict[str, str] | None = None) -> dict:
+    """Create a PRESENCE_LEAVE event when a user disconnects."""
+    evt: dict = {
+        "event": "presence_leave",
+        "user_id": user_id,
+        "users": users,
+    }
+    if user_colors is not None:
+        evt["user_colors"] = user_colors
+    return evt
+
+
+# ── Queue Auto-Refresh Events ─────────────────────────────────────────
+
+
+def queue_refresh_event(
+    added: list[dict],
+    removed: list[str],
+    total: int,
+    locks: dict[str, str],
+) -> dict:
+    """
+    Create a QUEUE_REFRESH event with incremental diff data.
+
+    Sent by the server-side background polling task when the queue
+    contents have changed since the last check.
+
+    Args:
+        added: List of serialised QueueTicketSummary dicts for new tickets.
+        removed: List of ticket IDs that are no longer in the queue.
+        total: Current total number of tickets in the queue.
+        locks: Current lock state dict (ticket_id → user_id).
+    """
+    return {
+        "event": "queue_refresh",
+        "added": added,
+        "removed": removed,
+        "total": total,
+        "locks": locks,
     }

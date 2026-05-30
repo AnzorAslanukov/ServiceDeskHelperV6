@@ -1,10 +1,10 @@
 """
 Pydantic models for Feature #3: Ticket Assignment Recommendation.
+
+Uses a TF-IDF classifier for fast, reliable support group prediction.
 """
 
 from pydantic import BaseModel, Field
-
-from src.models.chat import SourceCitation
 
 
 # ── Request Models ────────────────────────────────────────────────────
@@ -13,43 +13,49 @@ from src.models.chat import SourceCitation
 class AssignmentRequest(BaseModel):
     """Optional parameters for the assignment recommendation endpoint."""
 
-    top_k_docs: int = Field(
+    top_k: int = Field(
         default=5,
         ge=1,
         le=20,
-        description="Number of documentation articles to retrieve for context.",
-    )
-    top_k_tickets: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="Number of similar tickets to retrieve for context.",
-    )
-    max_tokens: int = Field(
-        default=2048,
-        ge=100,
-        le=4096,
-        description="Maximum tokens in the LLM response.",
+        description="Number of alternative predictions to return.",
     )
 
 
 # ── Response Models ───────────────────────────────────────────────────
 
 
+class ClassifierPrediction(BaseModel):
+    """A single support group prediction from the classifier."""
+
+    support_group: str = Field(
+        description="Predicted support group name.",
+    )
+    confidence: float = Field(
+        description="Confidence score (0.0 to 1.0).",
+    )
+
+
 class AssignmentRecommendation(BaseModel):
-    """The LLM's structured recommendation for ticket assignment."""
+    """The classifier's structured recommendation for ticket assignment."""
 
     support_group_name: str = Field(
-        description="Recommended support group name (e.g., 'EUS\\HUP', 'PennChart\\User Provisioning').",
+        description="Recommended support group name (e.g., 'HUP', 'User Provisioning').",
     )
     support_group_guid: str = Field(
         description="GUID for the recommended support group, correct for the ticket type (IR vs SR).",
     )
-    priority: str | int = Field(
-        description="Recommended priority level (e.g., 1, 2, 3 for IR or 'Low', 'Medium', 'High' for SR).",
+    confidence: float = Field(
+        description="Confidence score for the top prediction (0.0 to 1.0).",
+    )
+    method: str = Field(
+        description="Method used: 'classifier' or 'triage_rule'.",
     )
     rationale: str = Field(
-        description="Explanation of why this support group and priority were recommended.",
+        description="Brief explanation of why this group was recommended.",
+    )
+    alternatives: list[ClassifierPrediction] = Field(
+        default_factory=list,
+        description="Alternative predictions ranked by confidence.",
     )
 
 
@@ -66,6 +72,8 @@ class TicketInfo(BaseModel):
     affected_user: str | None = Field(default=None, description="Affected user display name.")
     affected_user_title: str | None = Field(default=None, description="Affected user job title.")
     location: str | None = Field(default=None, description="Physical location.")
+    classification: str | None = Field(default=None, description="Classification/Area.")
+    source: str | None = Field(default=None, description="Ticket source.")
     created_date: str | None = Field(default=None, description="Creation timestamp.")
 
 
@@ -74,9 +82,5 @@ class AssignmentResponse(BaseModel):
 
     ticket: TicketInfo = Field(description="Summary of the ticket being analyzed.")
     recommendation: AssignmentRecommendation = Field(
-        description="The AI-generated assignment recommendation.",
-    )
-    sources: list[SourceCitation] = Field(
-        default_factory=list,
-        description="Sources used to generate the recommendation.",
+        description="The classifier-generated assignment recommendation.",
     )

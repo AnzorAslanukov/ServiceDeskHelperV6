@@ -317,12 +317,22 @@
     color: var(--text-secondary);
 }
 
-/* Lock indicators */
+/* Lock indicators — colored dots */
+.lock-color-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    cursor: default;
+    vertical-align: middle;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.15);
+}
+
+/* Legacy classes kept for backwards compat */
 .lock-indicator {
     font-size: 1rem;
     cursor: default;
 }
-
 .lock-indicator.unlocked { color: var(--status-success); }
 .lock-indicator.locked-mine { color: var(--penn-accent); }
 .lock-indicator.locked-other { color: var(--status-error); }
@@ -859,35 +869,114 @@
     font-size: 0.85rem;
 }
 
-/* ── Support Group Autocomplete ────────────────────────────────────── */
+/* ── Support Group Dropdown ────────────────────────────────────────── */
 
-.sg-autocomplete-wrapper {
+.sg-dropdown-wrapper {
     position: relative;
     width: 100%;
 }
 
-.sg-autocomplete-input {
+.sg-dropdown-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    text-align: left;
+    transition: border-color var(--transition-speed);
     box-sizing: border-box;
 }
 
-.sg-autocomplete-dropdown {
-    display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    max-height: 250px;
-    overflow-y: auto;
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
-    border-top: none;
-    border-radius: 0 0 6px 6px;
-    box-shadow: var(--shadow-md);
-    z-index: 100;
+.sg-dropdown-toggle:hover {
+    border-color: var(--border-focus);
 }
 
-.sg-autocomplete-option {
+.sg-dropdown-toggle:focus {
+    outline: none;
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.15);
+}
+
+.sg-dropdown-toggle.sg-dropdown-has-value {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.sg-dropdown-toggle-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.sg-dropdown-chevron {
+    font-size: 0.65rem;
+    margin-left: 0.5rem;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    transition: transform 0.2s;
+}
+
+.sg-dropdown-panel-open + .sg-dropdown-panel .sg-dropdown-chevron,
+.sg-dropdown-wrapper:has(.sg-dropdown-panel-open) .sg-dropdown-chevron {
+    transform: rotate(180deg);
+}
+
+.sg-dropdown-panel {
+    display: none;
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    box-shadow: var(--shadow-md);
+    z-index: 200;
+    flex-direction: column;
+    max-height: 320px;
+}
+
+.sg-dropdown-panel.sg-dropdown-panel-open {
+    display: flex;
+}
+
+.sg-dropdown-search {
+    padding: 0.5rem 0.6rem;
+    border: none;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    outline: none;
+    border-radius: var(--border-radius-sm) var(--border-radius-sm) 0 0;
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.sg-dropdown-search::placeholder {
+    color: var(--text-muted);
+}
+
+.sg-dropdown-search:focus {
+    background: var(--bg-card);
+    box-shadow: inset 0 -2px 0 0 var(--penn-accent);
+}
+
+.sg-dropdown-list {
+    overflow-y: auto;
+    max-height: 260px;
+    flex: 1;
+}
+
+.sg-dropdown-option {
     padding: 0.4rem 0.6rem;
     font-size: 0.82rem;
     cursor: pointer;
@@ -896,28 +985,137 @@
     transition: background var(--transition-speed);
 }
 
-.sg-autocomplete-option:last-child {
+.sg-dropdown-option:last-child {
     border-bottom: none;
 }
 
-.sg-autocomplete-option:hover {
+.sg-dropdown-option:hover {
     background: var(--penn-accent);
     color: #fff;
 }
 
-.sg-autocomplete-no-match {
-    padding: 0.6rem;
+.sg-dropdown-no-match {
+    padding: 0.75rem 0.6rem;
     font-size: 0.82rem;
     color: var(--text-secondary);
     text-align: center;
     font-style: italic;
 }
 
-.sg-autocomplete-more {
+.sg-dropdown-more {
     padding: 0.4rem 0.6rem;
     font-size: 0.78rem;
     color: var(--text-secondary);
     text-align: center;
     font-style: italic;
     background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-color-light);
+}
+
+/* ── Queue Auto-Refresh Animations ─────────────────────────────────── */
+
+/* Newly added row — brief green highlight that fades out */
+.bulk-row-added {
+    animation: bulk-row-added-anim 2s ease-out;
+}
+
+@keyframes bulk-row-added-anim {
+    0%   { background-color: rgba(40, 167, 69, 0.25); }
+    100% { background-color: transparent; }
+}
+
+/* Row being removed — fade out and shrink */
+.bulk-row-removing {
+    opacity: 0;
+    transform: scaleY(0.8);
+    transition: opacity 0.3s ease-out, transform 0.3s ease-out;
+    pointer-events: none;
+}
+
+/* ── Presence Indicators ──────────────────────────────────────────── */
+
+.bulk-presence-item {
+    margin-left: auto;
+}
+
+.bulk-presence-list {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    vertical-align: middle;
+}
+
+.bulk-presence-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--bg-tertiary, #e9ecef);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.bulk-presence-badge.me {
+    background: var(--penn-accent, #4A90D9);
+    color: #fff;
+    border-color: var(--penn-accent, #4A90D9);
+}
+
+.bulk-presence-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.bulk-presence-dot.dot-me {
+    background: #4A90D9;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
+}
+
+.bulk-presence-dot.dot-other {
+    background: #e74c3c;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+/* ── Checkbox Selection Enhancements ──────────────────────────────── */
+
+/* Selected row highlight — subtle blue tint for checked tickets */
+.bulk-table tbody tr.bulk-row-selected {
+    background: rgba(74, 144, 217, 0.12) !important;
+}
+
+/* Pending lock/unlock spinner in checkbox cell */
+.bulk-checkbox-pending {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+}
+
+/* Disabled checkbox for other users' locks — slightly faded */
+.bulk-table td.col-checkbox input[type="checkbox"]:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Master checkbox in header — same size as row checkboxes */
+.bulk-table thead th.col-checkbox input[type="checkbox"] {
+    cursor: pointer;
+    width: 15px;
+    height: 15px;
+}
+
+/* Row checkboxes — consistent sizing */
+.bulk-table td.col-checkbox input[type="checkbox"] {
+    cursor: pointer;
+    width: 15px;
+    height: 15px;
 }

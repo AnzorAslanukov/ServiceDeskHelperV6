@@ -208,27 +208,68 @@ async def test_semantic_search_empty_results(
 @pytest.mark.asyncio
 async def test_find_similar_tickets_returns_results(
     search_service: TicketSearchService,
+    mock_athena_client,
     mock_databricks_client,
     sample_similar_results,
 ):
-    """Ticket similarity should look up embedding and find similar tickets."""
-    mock_databricks_client.get_ticket_embedding.return_value = [0.5] * 1024
+    """Ticket similarity should fetch ticket from Athena, generate embedding, and find similar tickets."""
+    mock_athena_client.get_ticket.return_value = {
+        "id": "IR1959493",
+        "title": "Printer not working on 3rd floor",
+        "description": "HP LaserJet on 3rd floor Ravdin is not printing.",
+    }
+    mock_databricks_client.generate_embedding.return_value = [0.5] * 1024
     mock_databricks_client.find_similar_by_embedding.return_value = sample_similar_results
 
     result = await search_service.find_similar_tickets(ticket_id="IR1959493", top_k=5)
 
     assert result.source_ticket_id == "IR1959493"
     assert len(result.similar_tickets) == 5
-    mock_databricks_client.get_ticket_embedding.assert_called_once_with("IR1959493")
+    mock_athena_client.get_ticket.assert_called_once_with("IR1959493")
+    mock_databricks_client.generate_embedding.assert_called_once_with(
+        "Printer not working on 3rd floor HP LaserJet on 3rd floor Ravdin is not printing."
+    )
+
+
+@pytest.mark.asyncio
+async def test_find_similar_tickets_sr_ticket(
+    search_service: TicketSearchService,
+    mock_athena_client,
+    mock_databricks_client,
+    sample_similar_results,
+):
+    """Ticket similarity should work for SR tickets via get_ticket auto-detection."""
+    mock_athena_client.get_ticket.return_value = {
+        "id": "SR10393291",
+        "title": "New laptop request",
+        "description": "User needs a new laptop for remote work.",
+    }
+    mock_databricks_client.generate_embedding.return_value = [0.5] * 1024
+    mock_databricks_client.find_similar_by_embedding.return_value = sample_similar_results
+
+    result = await search_service.find_similar_tickets(ticket_id="SR10393291", top_k=5)
+
+    assert result.source_ticket_id == "SR10393291"
+    assert len(result.similar_tickets) == 5
+    mock_athena_client.get_ticket.assert_called_once_with("SR10393291")
+    mock_databricks_client.generate_embedding.assert_called_once_with(
+        "New laptop request User needs a new laptop for remote work."
+    )
 
 
 @pytest.mark.asyncio
 async def test_find_similar_tickets_excludes_self(
     search_service: TicketSearchService,
+    mock_athena_client,
     mock_databricks_client,
 ):
     """Ticket similarity should exclude the source ticket from results."""
-    mock_databricks_client.get_ticket_embedding.return_value = [0.5] * 1024
+    mock_athena_client.get_ticket.return_value = {
+        "id": "IR1959493",
+        "title": "Printer issue",
+        "description": "Not printing.",
+    }
+    mock_databricks_client.generate_embedding.return_value = [0.5] * 1024
     mock_databricks_client.find_similar_by_embedding.return_value = [
         {"id": "IR1959493", "similarity": 1.0},  # self — should be excluded
         {"id": "IR1959100", "similarity": 0.95},
@@ -243,14 +284,32 @@ async def test_find_similar_tickets_excludes_self(
 
 
 @pytest.mark.asyncio
-async def test_find_similar_tickets_no_embedding_raises(
+async def test_find_similar_tickets_not_found_raises(
     search_service: TicketSearchService,
+    mock_athena_client,
     mock_databricks_client,
 ):
-    """Ticket similarity should raise ValueError if no embedding exists."""
-    mock_databricks_client.get_ticket_embedding.return_value = None
+    """Ticket similarity should raise ValueError if ticket not found in Athena."""
+    mock_athena_client.get_ticket.return_value = None
 
-    with pytest.raises(ValueError, match="No embedding found"):
+    with pytest.raises(ValueError, match="not found in Athena"):
+        await search_service.find_similar_tickets(ticket_id="IR9999999")
+
+
+@pytest.mark.asyncio
+async def test_find_similar_tickets_no_content_raises(
+    search_service: TicketSearchService,
+    mock_athena_client,
+    mock_databricks_client,
+):
+    """Ticket similarity should raise ValueError if ticket has no title or description."""
+    mock_athena_client.get_ticket.return_value = {
+        "id": "IR9999999",
+        "title": None,
+        "description": None,
+    }
+
+    with pytest.raises(ValueError, match="no title or description"):
         await search_service.find_similar_tickets(ticket_id="IR9999999")
 
 

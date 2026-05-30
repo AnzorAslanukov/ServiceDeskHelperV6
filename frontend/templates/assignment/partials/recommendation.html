@@ -9,11 +9,15 @@
 <!-- Recommendation Result -->
 <div class="assignment-result">
 
-    <!-- AI Recommendation Card (prominent) -->
+    <!-- Recommendation Card -->
     <div class="card assignment-recommendation-card">
         <div class="card-header">
-            <h2>🎯 AI Recommendation</h2>
-            <span class="badge badge-success">Generated</span>
+            <h2>🎯 Assignment Recommendation</h2>
+            {% if recommendation.method == "triage_rule" %}
+            <span class="badge badge-info">Triage Rule</span>
+            {% else %}
+            <span class="badge badge-success">Classifier</span>
+            {% endif %}
         </div>
         <div class="assignment-recommendation-body">
             <div class="recommendation-grid">
@@ -23,152 +27,142 @@
                     <div class="recommendation-value recommendation-value-lg">
                         {{ recommendation.support_group_name }}
                     </div>
+                    {% if recommendation.support_group_guid %}
                     <div class="recommendation-guid">
                         <span class="recommendation-guid-label">GUID:</span>
                         <code class="recommendation-guid-value">{{ recommendation.support_group_guid }}</code>
-                        <button class="btn-icon-copy" onclick="copyToClipboard(this, '{{ recommendation.support_group_guid }}')" title="Copy GUID">
-                            📋
-                        </button>
                     </div>
+                    {% endif %}
                 </div>
 
-                <!-- Priority -->
+                <!-- Confidence -->
                 <div class="recommendation-item">
-                    <div class="recommendation-label">Recommended Priority</div>
+                    <div class="recommendation-label">Confidence</div>
                     <div class="recommendation-value">
-                        <span class="badge badge-priority badge-priority-{{ recommendation.priority|lower if recommendation.priority is string else recommendation.priority }}">
-                            {{ recommendation.priority }}
-                        </span>
+                        <div class="confidence-bar-container">
+                            <div class="confidence-bar" style="width: {{ (recommendation.confidence * 100)|round(1) }}%"></div>
+                        </div>
+                        <span class="confidence-text">{{ (recommendation.confidence * 100)|round(1) }}%</span>
                     </div>
                 </div>
-            </div>
 
-            <!-- Rationale -->
-            <div class="recommendation-rationale">
-                <div class="recommendation-label">Rationale</div>
-                <div class="recommendation-rationale-text">{{ recommendation.rationale }}</div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Ticket Summary Card -->
-    <div class="card assignment-ticket-card">
-        <div class="card-header">
-            <h2>📋 Ticket Summary</h2>
-            <span class="badge">{{ ticket.id }}</span>
-        </div>
-        <div class="assignment-ticket-body">
-            <div class="ticket-summary-grid">
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Ticket ID</span>
-                    <span class="ticket-summary-value">
-                        {{ ticket.id }}
-                        <button class="btn-icon-copy" onclick="copyToClipboard(this, '{{ ticket.id }}')" title="Copy ticket ID">📋</button>
-                    </span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Type</span>
-                    <span class="ticket-summary-value">
-                        <span class="badge {% if ticket.ticket_type == 'incident' %}badge-ir{% else %}badge-sr{% endif %}">
-                            {{ 'Incident' if ticket.ticket_type == 'incident' else 'Service Request' }}
-                        </span>
-                    </span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Status</span>
-                    <span class="ticket-summary-value">{{ ticket.status or '—' }}</span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Current Priority</span>
-                    <span class="ticket-summary-value">{{ ticket.priority or '—' }}</span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Current Support Group</span>
-                    <span class="ticket-summary-value">{{ ticket.support_group or '—' }}</span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Affected User</span>
-                    <span class="ticket-summary-value">{{ ticket.affected_user or '—' }}</span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Job Title</span>
-                    <span class="ticket-summary-value">{{ ticket.affected_user_title or '—' }}</span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Location</span>
-                    <span class="ticket-summary-value">{{ ticket.location or '—' }}</span>
-                </div>
-                <div class="ticket-summary-field">
-                    <span class="ticket-summary-label">Created</span>
-                    <span class="ticket-summary-value">{{ ticket.created_date or '—' }}</span>
-                </div>
-                <div class="ticket-summary-field ticket-summary-field-full">
-                    <span class="ticket-summary-label">Title</span>
-                    <span class="ticket-summary-value">{{ ticket.title or '—' }}</span>
-                </div>
-                {% if ticket.description %}
-                <div class="ticket-summary-field ticket-summary-field-full">
-                    <span class="ticket-summary-label">Description</span>
-                    <span class="ticket-summary-value ticket-summary-description">{{ ticket.description }}</span>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <!-- Sources Card -->
-    {% if sources and sources|length > 0 %}
-    <div class="card assignment-sources-card">
-        <div class="card-header">
-            <h2>📚 Sources Used</h2>
-            <span class="badge">{{ sources|length }} source{{ 's' if sources|length != 1 else '' }}</span>
-        </div>
-        <div class="assignment-sources-body">
-            {% for src in sources %}
-            <div class="assignment-source-item {% if src.type == 'ticket' %}assignment-source-expandable{% endif %}">
-                <span class="assignment-source-icon">
-                    {% if src.type == 'documentation' %}📄{% else %}🎫{% endif %}
-                </span>
-                <div class="assignment-source-info">
-                    <div class="assignment-source-title">
-                        {{ src.title or 'Untitled' }}
-                        <button class="btn-icon-copy" onclick="copyToClipboard(this, '{{ src.title or 'Untitled' }}')" title="Copy to clipboard">📋</button>
-                        {% if src.type == 'ticket' %}
-                        <button class="btn-source-expand" onclick="toggleSourceTicketDetail(this, '{{ src.title }}')" title="Show ticket details">▶</button>
+                <!-- Method -->
+                <div class="recommendation-item">
+                    <div class="recommendation-label">Method</div>
+                    <div class="recommendation-value">
+                        {% if recommendation.method == "triage_rule" %}
+                        📋 Triage Rule (deterministic)
+                        {% else %}
+                        🤖 TF-IDF Classifier (ML)
                         {% endif %}
                     </div>
-                    {% if src.notebook or src.section %}
-                    <div class="assignment-source-detail">
-                        {% if src.notebook %}{{ src.notebook }}{% endif %}
-                        {% if src.notebook and src.section %} › {% endif %}
-                        {% if src.section %}{{ src.section }}{% endif %}
-                    </div>
-                    {% elif src.type == 'ticket' %}
-                    <div class="assignment-source-detail">Historical ticket — click ▶ to expand details</div>
-                    {% endif %}
-                    {% if src.content_preview %}
-                    <div class="assignment-source-preview">{{ src.content_preview }}</div>
-                    {% endif %}
                 </div>
-                <div class="assignment-source-score">
-                    {% set score_pct = (src.similarity * 100)|round|int if src.similarity else 0 %}
-                    <div class="similarity-score">
-                        <div class="similarity-bar">
-                            <div class="similarity-bar-fill" style="width:{{ score_pct }}%"></div>
-                        </div>
-                        <span>{{ score_pct }}%</span>
+
+                <!-- Rationale -->
+                <div class="recommendation-item">
+                    <div class="recommendation-label">Rationale</div>
+                    <div class="recommendation-value recommendation-rationale">
+                        {{ recommendation.rationale }}
                     </div>
                 </div>
             </div>
-            {% if src.type == 'ticket' %}
-            <div class="assignment-source-detail-panel" id="source-detail-{{ src.title }}" style="display:none;">
-                <div class="assignment-source-detail-loading">Loading ticket details…</div>
-            </div>
-            {% endif %}
-            {% endfor %}
+        </div>
+    </div>
+
+    {% if recommendation.alternatives %}
+    <!-- Alternative Predictions -->
+    <div class="card assignment-alternatives-card">
+        <div class="card-header">
+            <h3>📊 Alternative Predictions</h3>
+        </div>
+        <div class="assignment-alternatives-body">
+            <table class="alternatives-table">
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Support Group</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for alt in recommendation.alternatives %}
+                    <tr>
+                        <td>{{ loop.index + 1 }}</td>
+                        <td>{{ alt.support_group }}</td>
+                        <td>
+                            <div class="confidence-bar-container confidence-bar-sm">
+                                <div class="confidence-bar" style="width: {{ (alt.confidence * 100)|round(1) }}%"></div>
+                            </div>
+                            <span class="confidence-text-sm">{{ (alt.confidence * 100)|round(1) }}%</span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
     {% endif %}
+
+    <!-- Ticket Info Card -->
+    <div class="card assignment-ticket-card">
+        <div class="card-header">
+            <h3>📋 Ticket Details</h3>
+        </div>
+        <div class="assignment-ticket-body">
+            <div class="ticket-info-grid">
+                <div class="ticket-info-item">
+                    <span class="ticket-info-label">Ticket ID:</span>
+                    <span class="ticket-info-value">{{ ticket.id }}</span>
+                </div>
+                <div class="ticket-info-item">
+                    <span class="ticket-info-label">Type:</span>
+                    <span class="ticket-info-value">{{ ticket.ticket_type }}</span>
+                </div>
+                {% if ticket.title %}
+                <div class="ticket-info-item ticket-info-full">
+                    <span class="ticket-info-label">Title:</span>
+                    <span class="ticket-info-value">{{ ticket.title }}</span>
+                </div>
+                {% endif %}
+                {% if ticket.location %}
+                <div class="ticket-info-item">
+                    <span class="ticket-info-label">Location:</span>
+                    <span class="ticket-info-value">{{ ticket.location }}</span>
+                </div>
+                {% endif %}
+                {% if ticket.support_group %}
+                <div class="ticket-info-item">
+                    <span class="ticket-info-label">Current Group:</span>
+                    <span class="ticket-info-value">{{ ticket.support_group }}</span>
+                </div>
+                {% endif %}
+                {% if ticket.status %}
+                <div class="ticket-info-item">
+                    <span class="ticket-info-label">Status:</span>
+                    <span class="ticket-info-value">{{ ticket.status }}</span>
+                </div>
+                {% endif %}
+                {% if ticket.priority %}
+                <div class="ticket-info-item">
+                    <span class="ticket-info-label">Priority:</span>
+                    <span class="ticket-info-value">{{ ticket.priority }}</span>
+                </div>
+                {% endif %}
+                {% if ticket.affected_user %}
+                <div class="ticket-info-item">
+                    <span class="ticket-info-label">Affected User:</span>
+                    <span class="ticket-info-value">{{ ticket.affected_user }}</span>
+                </div>
+                {% endif %}
+            </div>
+            {% if ticket.description %}
+            <div class="ticket-description">
+                <span class="ticket-info-label">Description:</span>
+                <p class="ticket-description-text">{{ ticket.description[:500] }}{% if ticket.description|length > 500 %}...{% endif %}</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
 
 </div>
 {% endif %}

@@ -13,8 +13,11 @@ from feature4.models import WSEventType
 from feature4.websocket.events import (
     assign_event,
     lock_event,
+    presence_join_event,
+    presence_leave_event,
     queue_loading_complete_event,
     queue_loading_start_event,
+    queue_refresh_event,
     queue_ticket_event,
     state_sync_event,
     unlock_event,
@@ -277,3 +280,241 @@ async def test_broadcast_all(manager):
     await manager.broadcast_all(data)
 
     ws_a.send_json.assert_called_once_with(data)
+
+
+# ── Queue Auto-Refresh Event Tests ────────────────────────────────────
+
+
+def test_queue_refresh_event_with_changes():
+    """Should create a properly structured queue_refresh event with added and removed."""
+    added = [
+        {"id": "IR10003", "entity_id": "eid-3", "ticket_type": "incident", "title": "New ticket"},
+    ]
+    removed = ["IR10001", "SR20001"]
+    locks = {"IR10002": "user_a"}
+
+    event = queue_refresh_event(
+        added=added,
+        removed=removed,
+        total=5,
+        locks=locks,
+    )
+
+    assert event["event"] == "queue_refresh"
+    assert len(event["added"]) == 1
+    assert event["added"][0]["id"] == "IR10003"
+    assert event["removed"] == ["IR10001", "SR20001"]
+    assert event["total"] == 5
+    assert event["locks"] == {"IR10002": "user_a"}
+
+
+def test_queue_refresh_event_empty_diff():
+    """Should create a valid event even when no changes occurred."""
+    event = queue_refresh_event(
+        added=[],
+        removed=[],
+        total=10,
+        locks={},
+    )
+
+    assert event["event"] == "queue_refresh"
+    assert event["added"] == []
+    assert event["removed"] == []
+    assert event["total"] == 10
+    assert event["locks"] == {}
+
+
+def test_queue_refresh_event_only_additions():
+    """Should handle additions without removals."""
+    added = [
+        {"id": "IR10003", "entity_id": "eid-3", "ticket_type": "incident"},
+        {"id": "SR20002", "entity_id": "eid-4", "ticket_type": "servicerequest"},
+    ]
+
+    event = queue_refresh_event(
+        added=added,
+        removed=[],
+        total=12,
+        locks={"IR10001": "user_a"},
+    )
+
+    assert len(event["added"]) == 2
+    assert event["removed"] == []
+    assert event["total"] == 12
+
+
+def test_queue_refresh_event_only_removals():
+    """Should handle removals without additions."""
+    event = queue_refresh_event(
+        added=[],
+        removed=["IR10001", "IR10002"],
+        total=8,
+        locks={},
+    )
+
+    assert event["added"] == []
+    assert len(event["removed"]) == 2
+    assert event["total"] == 8
+
+
+# ── Presence Event Helpers ────────────────────────────────────────────
+
+
+def test_presence_join_event():
+    """Should create a properly structured PRESENCE_JOIN event."""
+    event = presence_join_event("user_a", ["user_a", "user_b"])
+    assert event["event"] == "presence_join"
+    assert event["user_id"] == "user_a"
+    assert event["users"] == ["user_a", "user_b"]
+
+
+def test_presence_leave_event():
+    """Should create a properly structured PRESENCE_LEAVE event."""
+    event = presence_leave_event("user_a", ["user_b"])
+    assert event["event"] == "presence_leave"
+    assert event["user_id"] == "user_a"
+    assert event["users"] == ["user_b"]
+
+
+def test_presence_join_event_single_user():
+    """Should handle a single user joining (first user)."""
+    event = presence_join_event("user_a", ["user_a"])
+    assert event["event"] == "presence_join"
+    assert event["user_id"] == "user_a"
+    assert len(event["users"]) == 1
+
+
+def test_presence_leave_event_empty_users():
+    """Should handle the last user leaving (empty user list)."""
+    event = presence_leave_event("user_a", [])
+    assert event["event"] == "presence_leave"
+    assert event["user_id"] == "user_a"
+    assert event["users"] == []
+
+
+# ── Color Assignment Tests ─────────────────────────────────────────────
+
+from feature4.websocket.manager import USER_COLOR_PALETTE, USER_COLOR_SELF
+
+
+class TestColorAssignment:
+    """Tests for per-user color assignment in ConnectionManager."""
+
+    def test_assign_color_returns_first_palette_color(self):
+        """First user should get the first color in the palette."""
+        mgr = ConnectionManager()
+        color = mgr.assign_color("user_a")
+        assert color == USER_COLOR_PALETTE[0]
+
+    def test_assign_color_unique_per_user(self):
+        """Each user should get a unique color."""
+        mgr = ConnectionManager()
+        c1 = mgr.assign_color("user_a")
+        c2 = mgr.assign_color("user_b")
+        c3 = mgr.assign_color("user_c")
+        assert c1 != c2
+        assert c2 != c3
+        assert c1 != c3
+
+    def test_assign_color_idempotent(self):
+        """Assigning a color to the same user twice should return the same color."""
+        mgr = ConnectionManager()
+        c1 = mgr.assign_color("user_a")
+        c2 = mgr.assign_color("user_a")
+        assert c1 == c2
+
+    def test_assign_color_sequential(self):
+        """Colors should be assigned in palette order."""
+        mgr = ConnectionManager()
+        for i in range(len(USER_COLOR_PALETTE)):
+            color = mgr.assign_color(f"user_{i}")
+            assert color == USER_COLOR_PALETTE[i]
+
+    def test_assign_color_wraps_around(self):
+        """When all palette colors are used, should wrap around with modulo."""
+        mgr = ConnectionManager()
+        # Fill all palette slots
+        for i in range(len(USER_COLOR_PALETTE)):
+            mgr.assign_color(f"user_{i}")
+        # Next user wraps around
+        extra_color = mgr.assign_color("user_extra")
+        expected_idx = len(USER_COLOR_PALETTE) % len(USER_COLOR_PALETTE)
+        assert extra_color == USER_COLOR_PALETTE[expected_idx]
+
+    def test_release_color_frees_slot(self):
+        """Releasing a color should make it available for the next user."""
+        mgr = ConnectionManager()
+        c1 = mgr.assign_color("user_a")
+        c2 = mgr.assign_color("user_b")
+        mgr.release_color("user_a")
+        # user_c should get user_a's freed color (first unused in palette)
+        c3 = mgr.assign_color("user_c")
+        assert c3 == c1
+
+    def test_release_color_nonexistent_user(self):
+        """Releasing a color for a user that has none should not raise."""
+        mgr = ConnectionManager()
+        mgr.release_color("nonexistent")  # Should not raise
+
+    def test_user_colors_property(self):
+        """user_colors property should return a copy of the color map."""
+        mgr = ConnectionManager()
+        mgr.assign_color("user_a")
+        mgr.assign_color("user_b")
+        colors = mgr.user_colors
+        assert len(colors) == 2
+        assert "user_a" in colors
+        assert "user_b" in colors
+        # Should be a copy, not the internal dict
+        colors["user_c"] = "#000000"
+        assert "user_c" not in mgr.user_colors
+
+    @pytest.mark.asyncio
+    async def test_disconnect_releases_color(self):
+        """Disconnecting a user should release their color."""
+        mgr = ConnectionManager()
+        ws = AsyncMock()
+        ws.accept = AsyncMock()
+
+        await mgr.connect(ws, "user_a")
+        mgr.assign_color("user_a")
+        assert "user_a" in mgr.user_colors
+
+        mgr.disconnect("user_a")
+        assert "user_a" not in mgr.user_colors
+
+    def test_user_color_self_constant(self):
+        """USER_COLOR_SELF should be the Penn Medicine blue."""
+        assert USER_COLOR_SELF == "#4A90D9"
+
+    def test_palette_has_at_least_10_colors(self):
+        """Palette should have at least 10 colors for reasonable multi-user support."""
+        assert len(USER_COLOR_PALETTE) >= 10
+
+
+class TestPresenceEventsWithColors:
+    """Tests for presence events including user_colors."""
+
+    def test_presence_join_with_colors(self):
+        """presence_join_event should include user_colors when provided."""
+        colors = {"user_a": "#DC143C", "user_b": "#FF6347"}
+        event = presence_join_event("user_b", ["user_a", "user_b"], user_colors=colors)
+        assert event["event"] == "presence_join"
+        assert event["user_colors"] == colors
+
+    def test_presence_join_without_colors(self):
+        """presence_join_event should not include user_colors when not provided."""
+        event = presence_join_event("user_a", ["user_a"])
+        assert "user_colors" not in event
+
+    def test_presence_leave_with_colors(self):
+        """presence_leave_event should include user_colors when provided."""
+        colors = {"user_b": "#FF6347"}
+        event = presence_leave_event("user_a", ["user_b"], user_colors=colors)
+        assert event["event"] == "presence_leave"
+        assert event["user_colors"] == colors
+
+    def test_presence_leave_without_colors(self):
+        """presence_leave_event should not include user_colors when not provided."""
+        event = presence_leave_event("user_a", [])
+        assert "user_colors" not in event

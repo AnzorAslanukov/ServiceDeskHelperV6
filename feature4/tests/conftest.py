@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.clients.athena_client import AthenaClient
-from src.clients.databricks_client import DatabricksClient
 from src.services.assignment import AssignmentService
+from src.services.ticket_classifier import TicketClassifier
 
 from feature4.service import BulkAssignmentService
 
@@ -37,28 +37,23 @@ def mock_athena_client() -> AsyncMock:
 
 
 @pytest.fixture
-def mock_databricks_client() -> MagicMock:
-    """Create a mock DatabricksClient."""
-    client = MagicMock(spec=DatabricksClient)
-    # Async methods need AsyncMock
-    client.generate_embedding = AsyncMock(return_value=[0.1] * 1024)
-    client.generate_embeddings = AsyncMock(return_value=[[0.1] * 1024])
-    client.call_llm = AsyncMock(return_value="This is a mock LLM response.")
-    client.close = AsyncMock()
-    # Sync SQL methods
-    client.find_similar_by_embedding.return_value = []
-    client.find_similar_documentation.return_value = []
-    client.get_ticket_embedding.return_value = None
-    client.execute_query.return_value = []
-    return client
+def mock_classifier() -> MagicMock:
+    """Create a mock TicketClassifier."""
+    classifier = MagicMock()
+    classifier.predict.return_value = [
+        {"support_group": "HUP", "confidence": 0.75},
+        {"support_group": "User Provisioning", "confidence": 0.15},
+        {"support_group": "Account Provisioning", "confidence": 0.05},
+    ]
+    return classifier
 
 
 @pytest.fixture
-def bulk_assignment_service(mock_athena_client, mock_databricks_client) -> BulkAssignmentService:
+def bulk_assignment_service(mock_athena_client, mock_classifier) -> BulkAssignmentService:
     """Create a BulkAssignmentService with mocked clients."""
     assignment_svc = AssignmentService(
         athena_client=mock_athena_client,
-        databricks_client=mock_databricks_client,
+        classifier=mock_classifier,
     )
     return BulkAssignmentService(
         athena_client=mock_athena_client,

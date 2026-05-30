@@ -143,7 +143,7 @@ def test_databricks_sql_connection(databricks_client):
 def test_databricks_ir_embeddings_table_exists(databricks_client):
     """The ir_embeddings table should exist and have data."""
     results = databricks_client.execute_query(
-        "SELECT COUNT(*) AS cnt FROM scratchpad.aslanuka.ir_embeddings"
+        "SELECT COUNT(*) AS cnt FROM hive_metastore.embeddings_db.ticket_embeddings"
     )
     assert results[0]["cnt"] > 0
 
@@ -160,10 +160,10 @@ def test_databricks_get_ticket_embedding(databricks_client):
     """Should retrieve a pre-computed embedding for a known ticket."""
     # First, find any ticket ID in the table
     results = databricks_client.execute_query(
-        "SELECT id FROM scratchpad.aslanuka.ir_embeddings LIMIT 1"
+        "SELECT Id FROM hive_metastore.embeddings_db.ticket_embeddings LIMIT 1"
     )
     assert len(results) > 0
-    ticket_id = results[0]["id"]
+    ticket_id = results[0].get("Id") or results[0].get("id")
 
     embedding = databricks_client.get_ticket_embedding(ticket_id)
     assert embedding is not None
@@ -250,10 +250,10 @@ async def test_e2e_find_similar_tickets(search_service, databricks_client):
     """End-to-end: ticket similarity through the full service layer."""
     # Get a real ticket ID from the embeddings table
     results = databricks_client.execute_query(
-        "SELECT id FROM scratchpad.aslanuka.ir_embeddings WHERE id LIKE 'IR%' LIMIT 1"
+        "SELECT Id FROM hive_metastore.embeddings_db.ticket_embeddings WHERE Id LIKE 'IR%' LIMIT 1"
     )
     assert len(results) > 0
-    ticket_id = results[0]["id"]
+    ticket_id = results[0].get("Id") or results[0].get("id")
 
     result = await search_service.find_similar_tickets(
         ticket_id=ticket_id,

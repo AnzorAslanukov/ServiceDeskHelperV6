@@ -313,16 +313,16 @@ def test_similar_tickets_with_top_k(client, mock_search_service):
     )
 
 
-def test_similar_tickets_no_embedding_returns_404(client, mock_search_service):
+def test_similar_tickets_not_found_returns_404(client, mock_search_service):
     """Similar tickets for unknown ticket should return 404."""
     mock_search_service.find_similar_tickets.side_effect = ValueError(
-        "No embedding found for ticket 'IR9999999'."
+        "Ticket 'IR9999999' not found in Athena."
     )
 
     response = client.post("/search/similar/IR9999999")
 
     assert response.status_code == 404
-    assert "No embedding found" in response.json()["detail"]
+    assert "not found in Athena" in response.json()["detail"]
 
 
 def test_similar_tickets_default_top_k(client, mock_search_service):

@@ -63,10 +63,35 @@ function updateRangeDisplay(inputId, displayId) {
     }
 }
 
+// ── Clipboard Helper (works over HTTP on LAN, not just HTTPS/localhost) ─
+
+function _writeToClipboard(text) {
+    // navigator.clipboard requires a Secure Context (HTTPS or localhost).
+    // When accessed over plain HTTP from another machine on the LAN,
+    // the Clipboard API is unavailable. Fall back to execCommand('copy').
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+    }
+    // Fallback: create a temporary textarea, select its content, and copy
+    var textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    return new Promise(function (resolve, reject) {
+        var ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        ok ? resolve() : reject(new Error('execCommand copy failed'));
+    });
+}
+
 // ── Copy Ticket ID to Clipboard ───────────────────────────────────────
 
 function copyTicketId(btn, ticketId) {
-    navigator.clipboard.writeText(ticketId).then(function () {
+    _writeToClipboard(ticketId).then(function () {
         btn.textContent = '✓';
         btn.classList.add('copied');
         setTimeout(function () {
@@ -770,8 +795,15 @@ function sendChatMessage(evt) {
     })
     .then(function (response) {
         if (!response.ok) {
-            return response.json().then(function (err) {
-                throw new Error(err.detail || 'Request failed (' + response.status + ')');
+            return response.text().then(function (text) {
+                var detail = 'Request failed (' + response.status + ')';
+                try {
+                    var err = JSON.parse(text);
+                    detail = err.detail || detail;
+                } catch (_) {
+                    if (text) detail = text;
+                }
+                throw new Error(detail);
             });
         }
         return response.json();
@@ -1123,7 +1155,7 @@ function _buildSourcesHtml(sources) {
 // ── Copy Chat Source to Clipboard ─────────────────────────────────────
 
 function copyChatSource(btn, text) {
-    navigator.clipboard.writeText(text).then(function () {
+    _writeToClipboard(text).then(function () {
         btn.textContent = '✓';
         btn.classList.add('copied');
         setTimeout(function () {
@@ -1171,7 +1203,7 @@ function prepareAssignmentSubmit() {
 // ── Copy to Clipboard (generic) ───────────────────────────────────────
 
 function copyToClipboard(btn, text) {
-    navigator.clipboard.writeText(text).then(function () {
+    _writeToClipboard(text).then(function () {
         var original = btn.textContent;
         btn.textContent = '✓';
         btn.classList.add('copied');

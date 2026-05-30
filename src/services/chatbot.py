@@ -107,9 +107,9 @@ class ChatbotService:
                 None,
                 self._databricks.find_similar_by_embedding,
                 query_embedding,
-                "scratchpad.aslanuka.ir_embeddings",
-                "ticket_embedding",
-                "id",
+                "hive_metastore.embeddings_db.ticket_embeddings",
+                "embedding",
+                "Id",
                 top_k_tickets,
             ),
         )

@@ -9,8 +9,6 @@ Tests the bulk assignment pipeline with mocked clients:
 - Raw ticket to queue summary conversion
 """
 
-import json
-
 import pytest
 
 from feature4.models import TicketAssignment
@@ -120,12 +118,6 @@ SAMPLE_IR_QUEUE = _paged(SAMPLE_IR_TICKETS)
 SAMPLE_SR_QUEUE = _paged(SAMPLE_SR_TICKETS)
 EMPTY_QUEUE = _paged([])
 
-VALID_LLM_JSON = json.dumps({
-    "support_group_name": "EUS",
-    "support_group_guid": "ae9eb3ff-458a-206f-7815-129d50efa285",
-    "priority": 3,
-    "rationale": "Hardware issue should go to EUS.",
-})
 
 
 # ── Queue Fetching ────────────────────────────────────────────────────
@@ -338,6 +330,53 @@ def test_claim_batch_includes_own_locks(bulk_assignment_service: BulkAssignmentS
     assert claimed == ["IR10001", "IR10002"]
 
 
+def test_claim_batch_with_client_provided_ids(bulk_assignment_service: BulkAssignmentService):
+    """Should work with client-provided ticket IDs (fast path — no Athena fetch)."""
+    # Simulate client sending its local queue order
+    client_ids = ["SR20001", "IR10002", "IR10001"]
+    claimed = bulk_assignment_service.claim_batch("user_a", 2, client_ids)
+    assert claimed == ["SR20001", "IR10002"]
+    assert bulk_assignment_service.get_locks() == {
+        "SR20001": "user_a",
+        "IR10002": "user_a",
+    }
+
+
+def test_claim_batch_with_empty_client_ids(bulk_assignment_service: BulkAssignmentService):
+    """Should return empty list when client provides empty ticket_ids."""
+    claimed = bulk_assignment_service.claim_batch("user_a", 5, [])
+    assert claimed == []
+    assert bulk_assignment_service.get_locks() == {}
+
+
+def test_claim_batch_request_model_with_ticket_ids():
+    """ClaimBatchRequest should accept optional ticket_ids field."""
+    from feature4.models import ClaimBatchRequest
+
+    # With ticket_ids
+    req = ClaimBatchRequest(
+        user_id="user_a",
+        batch_size=5,
+        ticket_ids=["IR10001", "IR10002"],
+    )
+    assert req.ticket_ids == ["IR10001", "IR10002"]
+    assert req.batch_size == 5
+
+    # Without ticket_ids (backward compatible)
+    req2 = ClaimBatchRequest(user_id="user_b", batch_size=3)
+    assert req2.ticket_ids is None
+    assert req2.batch_size == 3
+
+
+def test_claim_batch_request_model_ticket_ids_none():
+    """ClaimBatchRequest ticket_ids defaults to None when omitted."""
+    from feature4.models import ClaimBatchRequest
+
+    req = ClaimBatchRequest(user_id="user_a")
+    assert req.ticket_ids is None
+    assert req.batch_size == 10  # default
+
+
 # ── Batch Recommendations ────────────────────────────────────────────
 
 
@@ -345,26 +384,23 @@ def test_claim_batch_includes_own_locks(bulk_assignment_service: BulkAssignmentS
 async def test_batch_recommend_success(
     bulk_assignment_service: BulkAssignmentService,
     mock_athena_client,
-    mock_databricks_client,
     sample_athena_ticket,
 ):
     """Should generate recommendations for each ticket."""
     mock_athena_client.get_ticket.return_value = sample_athena_ticket
-    mock_databricks_client.call_llm.return_value = VALID_LLM_JSON
 
     result = await bulk_assignment_service.batch_recommend(["IR1959493"])
 
     assert result.total == 1
     assert result.failed == 0
     assert result.recommendations[0].success is True
-    assert result.recommendations[0].recommendation.support_group_name == "EUS"
+    assert result.recommendations[0].recommendation.support_group_name == "HUP"
 
 
 @pytest.mark.asyncio
 async def test_batch_recommend_handles_failure(
     bulk_assignment_service: BulkAssignmentService,
     mock_athena_client,
-    mock_databricks_client,
 ):
     """Should handle individual ticket failures gracefully."""
     mock_athena_client.get_ticket.side_effect = Exception("Ticket not found")
@@ -381,7 +417,6 @@ async def test_batch_recommend_handles_failure(
 async def test_batch_recommend_mixed_results(
     bulk_assignment_service: BulkAssignmentService,
     mock_athena_client,
-    mock_databricks_client,
     sample_athena_ticket,
 ):
     """Should handle a mix of successful and failed recommendations."""
@@ -390,7 +425,6 @@ async def test_batch_recommend_mixed_results(
         sample_athena_ticket,
         Exception("Not found"),
     ]
-    mock_databricks_client.call_llm.return_value = VALID_LLM_JSON
 
     result = await bulk_assignment_service.batch_recommend(["IR1959493", "IR99999"])
 
@@ -1210,3 +1244,174 @@ async def test_fetch_queue_streaming_empty_queue(
 
     assert total == 0
     assert len(received_tickets) == 0
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Incremental Queue Refresh (compute_queue_diff)
+# ══════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_compute_queue_diff_no_changes(
+    bulk_assignment_service, mock_athena_client
+):
+    """compute_queue_diff returns empty added/removed when queue is unchanged."""
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {
+        "results": SAMPLE_SR_TICKETS[:1]
+    }
+
+    # First call — establishes baseline
+    diff1 = await bulk_assignment_service.compute_queue_diff()
+    assert diff1["total"] == 3
+    assert len(diff1["added"]) == 3  # all new on first call
+    assert len(diff1["removed"]) == 0
+
+    # Second call — same data, no changes
+    diff2 = await bulk_assignment_service.compute_queue_diff()
+    assert diff2["total"] == 3
+    assert len(diff2["added"]) == 0
+    assert len(diff2["removed"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_compute_queue_diff_tickets_added(
+    bulk_assignment_service, mock_athena_client
+):
+    """compute_queue_diff detects newly added tickets."""
+    # Initial: 1 IR ticket
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:1]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+
+    diff1 = await bulk_assignment_service.compute_queue_diff()
+    assert diff1["total"] == 1
+    assert len(diff1["added"]) == 1
+
+    # Now add a second IR ticket
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+
+    diff2 = await bulk_assignment_service.compute_queue_diff()
+    assert diff2["total"] == 2
+    assert len(diff2["added"]) == 1
+    assert diff2["added"][0].id == "IR10002"
+    assert len(diff2["removed"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_compute_queue_diff_tickets_removed(
+    bulk_assignment_service, mock_athena_client
+):
+    """compute_queue_diff detects removed tickets."""
+    # Initial: 2 IR tickets
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+
+    diff1 = await bulk_assignment_service.compute_queue_diff()
+    assert diff1["total"] == 2
+
+    # Now only 1 IR ticket remains (IR10002 removed)
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:1]
+    }
+
+    diff2 = await bulk_assignment_service.compute_queue_diff()
+    assert diff2["total"] == 1
+    assert len(diff2["added"]) == 0
+    assert len(diff2["removed"]) == 1
+    assert "IR10002" in diff2["removed"]
+
+
+@pytest.mark.asyncio
+async def test_compute_queue_diff_mixed_changes(
+    bulk_assignment_service, mock_athena_client
+):
+    """compute_queue_diff handles simultaneous additions and removals."""
+    # Initial: IR10001 + SR20001
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:1]
+    }
+    mock_athena_client.search_service_requests.return_value = {
+        "results": SAMPLE_SR_TICKETS[:1]
+    }
+
+    diff1 = await bulk_assignment_service.compute_queue_diff()
+    assert diff1["total"] == 2
+
+    # Now: IR10002 added, SR20001 removed
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+
+    diff2 = await bulk_assignment_service.compute_queue_diff()
+    assert diff2["total"] == 2
+    assert len(diff2["added"]) == 1
+    assert diff2["added"][0].id == "IR10002"
+    assert len(diff2["removed"]) == 1
+    assert "SR20001" in diff2["removed"]
+
+
+@pytest.mark.asyncio
+async def test_compute_queue_diff_cleans_locks_for_removed(
+    bulk_assignment_service, mock_athena_client
+):
+    """compute_queue_diff cleans up locks for removed tickets."""
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+
+    # Establish baseline
+    await bulk_assignment_service.compute_queue_diff()
+
+    # Lock IR10002
+    bulk_assignment_service.lock_tickets(["IR10002"], "user_a")
+    assert "IR10002" in bulk_assignment_service.get_locks()
+
+    # Remove IR10002 from queue
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:1]
+    }
+
+    diff = await bulk_assignment_service.compute_queue_diff()
+    assert "IR10002" in diff["removed"]
+    # Lock should be cleaned up
+    assert "IR10002" not in bulk_assignment_service.get_locks()
+
+
+def test_snapshot_ticket_ids(bulk_assignment_service):
+    """snapshot_ticket_ids sets the last-known ticket ID set."""
+    assert bulk_assignment_service._last_known_ticket_ids == set()
+
+    bulk_assignment_service.snapshot_ticket_ids({"IR10001", "IR10002", "SR30001"})
+    assert bulk_assignment_service._last_known_ticket_ids == {"IR10001", "IR10002", "SR30001"}
+
+
+@pytest.mark.asyncio
+async def test_compute_queue_diff_after_snapshot(
+    bulk_assignment_service, mock_athena_client
+):
+    """compute_queue_diff produces correct diff after snapshot_ticket_ids."""
+    # Snapshot as if initial load had IR10001 and SR20001
+    bulk_assignment_service.snapshot_ticket_ids({"IR10001", "SR20001"})
+
+    # Now queue has IR10001 + IR10002 (SR20001 removed, IR10002 added)
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+
+    diff = await bulk_assignment_service.compute_queue_diff()
+    assert diff["total"] == 2
+    assert len(diff["added"]) == 1
+    assert diff["added"][0].id == "IR10002"
+    assert len(diff["removed"]) == 1
+    assert "SR20001" in diff["removed"]

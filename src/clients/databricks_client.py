@@ -112,9 +112,9 @@ class DatabricksClient:
     def find_similar_by_embedding(
         self,
         embedding: list[float],
-        table: str = "scratchpad.aslanuka.ir_embeddings",
-        embedding_column: str = "ticket_embedding",
-        id_column: str = "id",
+        table: str = "hive_metastore.embeddings_db.ticket_embeddings",
+        embedding_column: str = "embedding",
+        id_column: str = "Id",
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
         """
@@ -188,7 +188,7 @@ class DatabricksClient:
                     sqrt(aggregate(embeddings, DOUBLE(0), (acc, x) -> acc + x * x))
                     * sqrt(aggregate(array({embedding_str}), DOUBLE(0), (acc, x) -> acc + x * x))
                 ) AS similarity
-            FROM scratchpad.aslanuka.onenote_documentation
+            FROM hive_metastore.embeddings_db.onenote_documentation
             ORDER BY similarity DESC
             LIMIT {top_k}
         """
@@ -205,14 +205,14 @@ class DatabricksClient:
             Embedding vector or None if not found.
         """
         query = """
-            SELECT ticket_embedding
-            FROM scratchpad.aslanuka.ir_embeddings
-            WHERE id = :ticket_id
+            SELECT embedding
+            FROM hive_metastore.embeddings_db.ticket_embeddings
+            WHERE Id = :ticket_id
             LIMIT 1
         """
         results = self.execute_query(query, {"ticket_id": ticket_id})
         if results:
-            raw = results[0]["ticket_embedding"]
+            raw = results[0]["embedding"]
             return self._parse_embedding(raw)
         return None
 

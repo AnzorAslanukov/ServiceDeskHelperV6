@@ -14,10 +14,22 @@ var _bulkOverrides = {};      // ticket_id → { tier_queue_guid, tier_queue_nam
 var _bulkSelected = new Set();
 var _bulkBusy = false;
 var _bulkStreamingLoad = false;  // true while WebSocket streaming queue load is in progress
+var _bulkLockPending = new Set();  // ticket IDs with in-flight lock/unlock requests
 
 // Support group lists for manual assignment: ticket_type → [{name, guid}, ...]
 var _bulkSupportGroups = {};
 var _bulkSgLoading = {};  // ticket_type → true while loading
+
+// Online presence: list of user IDs currently connected
+var _bulkOnlineUsers = [];
+
+// Per-user color assignments: user_id → color hex (from server)
+var _bulkUserColors = {};
+
+// Blue color for the current user (Penn Medicine accent)
+var _USER_COLOR_SELF = '#4A90D9';
+// Green color for unlocked tickets
+var _USER_COLOR_UNLOCKED = '#27ae60';
 
 // ── Login ─────────────────────────────────────────────────────────────
 
@@ -95,6 +107,13 @@ function _handleWsEvent(data) {
 
     if (event === 'state_sync') {
         _bulkLocks = data.locks || {};
+        if (data.user_colors) {
+            _bulkUserColors = data.user_colors;
+        }
+        if (data.users) {
+            _bulkOnlineUsers = data.users;
+            _renderPresence();
+        }
         _renderQueue();
         _updateCounts();
     } else if (event === 'lock') {
@@ -208,6 +227,114 @@ function _handleWsEvent(data) {
             '<div class="empty-text">Failed to load queue</div>' +
             '<div class="empty-hint">' + _escapeHtml(data.message || 'Unknown error') + '</div></div>';
         _showToast('Failed to load queue: ' + (data.message || 'Unknown error'), 'error');
+
+    // ── Presence Events ───────────────────────────────────────────
+    } else if (event === 'presence_join') {
+        _bulkOnlineUsers = data.users || [];
+        if (data.user_colors) {
+            _bulkUserColors = data.user_colors;
+        }
+        _renderPresence();
+        if (data.user_id !== _bulkUserId) {
+            _showToast(data.user_id + ' joined', 'info');
+        }
+
+    } else if (event === 'presence_leave') {
+        _bulkOnlineUsers = data.users || [];
+        if (data.user_colors) {
+            _bulkUserColors = data.user_colors;
+        }
+        _renderPresence();
+        if (data.user_id !== _bulkUserId) {
+            _showToast(data.user_id + ' left', 'info');
+        }
+
+    // ── Queue Auto-Refresh Events ─────────────────────────────────
+    } else if (event === 'queue_refresh') {
+        _handleQueueRefresh(data);
+    }
+}
+
+/**
+ * Handle an incremental queue_refresh event from the server.
+ * Removes departed tickets and appends new ones without a full re-render.
+ */
+function _handleQueueRefresh(data) {
+    var removed = data.removed || [];
+    var added = data.added || [];
+    var serverLocks = data.locks || {};
+
+    if (removed.length === 0 && added.length === 0) return;
+
+    // ── Removals ──────────────────────────────────────────────────
+    removed.forEach(function (tid) {
+        // Animate and remove DOM rows
+        _removeTicketRows(tid);
+        // Clean up in-memory state
+        _bulkQueue = _bulkQueue.filter(function (t) { return t.id !== tid; });
+        _bulkSelected.delete(tid);
+        delete _bulkLocks[tid];
+        delete _bulkRecs[tid];
+        delete _bulkOverrides[tid];
+    });
+
+    // ── Additions ─────────────────────────────────────────────────
+    added.forEach(function (ticket) {
+        // Avoid duplicates (defensive)
+        if (_findTicket(ticket.id)) return;
+        _bulkQueue.push(ticket);
+    });
+
+    // ── Update lock state ─────────────────────────────────────────
+    for (var k in serverLocks) {
+        _bulkLocks[k] = serverLocks[k];
+    }
+
+    // If there were additions, re-sort and do a full re-render
+    // (simpler than inserting rows in sorted order with detail/rec rows)
+    if (added.length > 0) {
+        _bulkQueue.sort(function (a, b) {
+            return (a.created_date || '').localeCompare(b.created_date || '');
+        });
+        _renderQueue();
+        // Highlight newly added rows
+        added.forEach(function (ticket) {
+            var row = document.querySelector('tr[data-ticket-id="' + ticket.id + '"]');
+            if (row) row.classList.add('bulk-row-added');
+        });
+    }
+
+    _updateCounts();
+    document.getElementById('bulkQueueBadge').textContent = _bulkQueue.length + ' tickets';
+
+    // Toast summary
+    var parts = [];
+    if (added.length > 0) parts.push('+' + added.length + ' added');
+    if (removed.length > 0) parts.push('-' + removed.length + ' removed');
+    _showToast('Queue updated: ' + parts.join(', '), 'info');
+}
+
+/**
+ * Remove all DOM rows for a ticket (main row + detail row + rec row)
+ * with a brief fade-out animation.
+ */
+function _removeTicketRows(ticketId) {
+    // Main row
+    var row = document.querySelector('tr[data-ticket-id="' + ticketId + '"]');
+    if (row) {
+        // Detail row is the next sibling
+        var next = row.nextElementSibling;
+        if (next && next.classList.contains('bulk-detail-row')) {
+            var recRow = next.nextElementSibling;
+            if (recRow && recRow.classList.contains('bulk-rec-row')) {
+                recRow.classList.add('bulk-row-removing');
+                setTimeout(function () { recRow.remove(); }, 300);
+            }
+            next.classList.add('bulk-row-removing');
+            setTimeout(function () { next.remove(); }, 300);
+        }
+        row.classList.add('bulk-row-removing');
+        setTimeout(function () { row.remove(); }, 300);
     }
 }
 
@@ -287,10 +414,13 @@ function bulkClaimBatch() {
     var batchSize = parseInt(document.getElementById('bulkBatchSize').value) || 10;
     _setBusy(true);
 
+    // Send local queue ticket IDs so the server can skip re-fetching from Athena
+    var ticketIds = _bulkQueue.map(function (t) { return t.id; });
+
     fetch('/bulk/claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: _bulkUserId, batch_size: batchSize })
+        body: JSON.stringify({ user_id: _bulkUserId, batch_size: batchSize, ticket_ids: ticketIds })
     })
     .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -394,9 +524,6 @@ function bulkGetRecommendations() {
         body: JSON.stringify({
             ticket_ids: ticketIds,
             user_id: _bulkUserId,
-            top_k_docs: topKDocs,
-            top_k_tickets: topKTickets,
-            max_tokens: maxTokens
         })
     })
     .then(function (r) {
@@ -622,7 +749,7 @@ function _appendTicketToTable(ticket) {
     var rowHtml = '<tr class="bulk-stream-row" data-ticket-id="' + _escapeHtml(ticket.id) + '">' +
         '<td class="col-expand"></td>' +
         '<td class="col-checkbox"></td>' +
-        '<td class="col-lock"><span class="lock-indicator unlocked" title="Unlocked">🟢</span></td>' +
+        '<td class="col-lock"><span class="lock-color-dot" style="background-color:' + _USER_COLOR_UNLOCKED + ';" title="Unlocked"></span></td>' +
         '<td class="ticket-id-cell">' + _escapeHtml(ticket.id) + '</td>' +
         '<td><span class="ticket-type-badge ' + typeClass + '">' + typeLabel + '</span></td>' +
         '<td class="title-cell" title="' + _escapeHtml(ticket.title || '') + '">' + _escapeHtml(ticket.title || '—') + '</td>' +
@@ -640,6 +767,10 @@ function _appendTicketToTable(ticket) {
 function _renderQueue() {
     var container = document.getElementById('bulkQueueBody');
 
+    // Preserve scroll position across full re-render
+    var savedScrollX = window.scrollX;
+    var savedScrollY = window.scrollY;
+
     if (_bulkQueue.length === 0) {
         container.innerHTML =
             '<div class="bulk-empty-state">' +
@@ -647,12 +778,13 @@ function _renderQueue() {
                 '<div class="empty-text">Queue is empty</div>' +
                 '<div class="empty-hint">All tickets have been processed or the queue has no matching tickets</div>' +
             '</div>';
+        window.scrollTo(savedScrollX, savedScrollY);
         return;
     }
 
     var html = '<table class="bulk-table"><thead><tr>' +
         '<th class="col-expand"></th>' +
-        '<th class="col-checkbox"><input type="checkbox" onchange="bulkToggleSelectAll(this)" title="Select all my locked tickets"></th>' +
+        '<th class="col-checkbox"><input type="checkbox" id="bulkSelectAllCb" onchange="bulkToggleSelectAllMine(this.checked)" title="Select/deselect all my locked tickets"></th>' +
         '<th class="col-lock">Lock</th>' +
         '<th>Ticket ID</th>' +
         '<th>Type</th>' +
@@ -685,9 +817,19 @@ function _renderQueue() {
             '<button class="bulk-expand-btn" onclick="bulkToggleExpand(this)" title="Show details">▶</button>' +
             '</td>';
 
-        // Checkbox
+        // Checkbox — shown on ALL tickets
+        var isPending = _bulkLockPending.has(ticket.id);
         html += '<td class="col-checkbox">';
-        if (isMyLock) {
+        if (isPending) {
+            // Lock/unlock in progress — show spinner
+            html += '<span class="bulk-checkbox-pending" title="Locking…"><span class="rec-spinner"></span></span>';
+        } else if (isOtherLock) {
+            // Locked by another user — disabled checkbox with their color
+            var otherColor = _bulkUserColors[lockOwner] || '#e74c3c';
+            html += '<input type="checkbox" disabled title="Locked by ' + _escapeHtml(lockOwner) + '"' +
+                ' style="accent-color:' + otherColor + '; opacity:0.5; cursor:not-allowed;">';
+        } else {
+            // Unlocked or my lock — enabled checkbox
             html += '<input type="checkbox" ' + (isSelected ? 'checked' : '') +
                 ' onchange="bulkToggleSelect(\'' + _escapeHtml(ticket.id) + '\', this.checked)">';
         }
@@ -696,11 +838,12 @@ function _renderQueue() {
         // Lock indicator
         html += '<td class="col-lock">';
         if (isMyLock) {
-            html += '<span class="lock-indicator locked-mine" title="Locked by you">🔵</span>';
+            html += '<span class="lock-color-dot" style="background-color:' + _USER_COLOR_SELF + ';" title="Locked by you"></span>';
         } else if (isOtherLock) {
-            html += '<span class="lock-indicator locked-other" title="Locked by ' + _escapeHtml(lockOwner) + '">🔴</span>';
+            var ownerColor = _bulkUserColors[lockOwner] || '#e74c3c';
+            html += '<span class="lock-color-dot" style="background-color:' + ownerColor + ';" title="Locked by ' + _escapeHtml(lockOwner) + '"></span>';
         } else {
-            html += '<span class="lock-indicator unlocked" title="Unlocked">🟢</span>';
+            html += '<span class="lock-color-dot" style="background-color:' + _USER_COLOR_UNLOCKED + ';" title="Unlocked"></span>';
         }
         html += '</td>';
 
@@ -741,6 +884,9 @@ function _renderQueue() {
 
     html += '</tbody></table>';
     container.innerHTML = html;
+
+    // Restore scroll position after DOM replacement
+    window.scrollTo(savedScrollX, savedScrollY);
 }
 
 function _renderDetailRow(ticket) {
@@ -812,21 +958,27 @@ function _renderDetailRow(ticket) {
         html += '<h4 class="manual-assign-title">✏️ Manual Assignment</h4>';
         html += '<div class="manual-assign-fields">';
 
-        // Support Group autocomplete
+        // Support Group dropdown with search
         html += '<div class="manual-assign-field">' +
             '<label>Support Group</label>' +
-            '<div class="sg-autocomplete-wrapper">' +
-            '<input type="text" class="sg-autocomplete-input" ' +
-            'id="sgInput_' + _escapeHtml(ticket.id) + '" ' +
-            'value="' + _escapeHtml(sgValue) + '" ' +
-            'placeholder="Type to search support groups…" ' +
-            'autocomplete="off" ' +
-            'onfocus="bulkSgFocus(\'' + _escapeHtml(ticket.id) + '\', \'' + _escapeHtml(ticket.ticket_type) + '\')" ' +
-            'oninput="bulkSgFilter(\'' + _escapeHtml(ticket.id) + '\')">' +
-            '<input type="hidden" class="sg-autocomplete-guid" ' +
+            '<div class="sg-dropdown-wrapper" id="sgWrapper_' + _escapeHtml(ticket.id) + '">' +
+            '<button type="button" class="sg-dropdown-toggle" ' +
+            'id="sgToggle_' + _escapeHtml(ticket.id) + '" ' +
+            'onclick="bulkSgToggle(\'' + _escapeHtml(ticket.id) + '\', \'' + _escapeHtml(ticket.ticket_type) + '\')">' +
+            '<span class="sg-dropdown-toggle-text">' + (sgValue ? _escapeHtml(sgValue) : 'Select support group…') + '</span>' +
+            '<span class="sg-dropdown-chevron">▼</span>' +
+            '</button>' +
+            '<input type="hidden" class="sg-dropdown-guid" ' +
             'id="sgGuid_' + _escapeHtml(ticket.id) + '" ' +
             'value="' + _escapeHtml(override.tier_queue_guid || '') + '">' +
-            '<div class="sg-autocomplete-dropdown" id="sgDropdown_' + _escapeHtml(ticket.id) + '"></div>' +
+            '<div class="sg-dropdown-panel" id="sgPanel_' + _escapeHtml(ticket.id) + '">' +
+            '<input type="text" class="sg-dropdown-search" ' +
+            'id="sgSearch_' + _escapeHtml(ticket.id) + '" ' +
+            'placeholder="Search support groups…" ' +
+            'autocomplete="off" ' +
+            'oninput="bulkSgFilter(\'' + _escapeHtml(ticket.id) + '\')">' +
+            '<div class="sg-dropdown-list" id="sgList_' + _escapeHtml(ticket.id) + '"></div>' +
+            '</div>' +
             '</div>' +
             '</div>';
 
@@ -838,8 +990,8 @@ function _renderDetailRow(ticket) {
         html += '<option value="">— Keep current —</option>';
 
         if (isIR) {
-            // IR: numeric priorities 1-9
-            for (var p = 1; p <= 9; p++) {
+            // IR: numeric priorities 1-3
+            for (var p = 1; p <= 3; p++) {
                 var sel = (priValue === String(p)) ? ' selected' : '';
                 html += '<option value="' + p + '"' + sel + '>' + p + '</option>';
             }
@@ -955,18 +1107,153 @@ function _updateTicketRow(ticketId) {
 // ── Selection ─────────────────────────────────────────────────────────
 
 function bulkToggleSelect(ticketId, checked) {
+    var lockOwner = _bulkLocks[ticketId] || null;
+    var isMyLock = lockOwner === _bulkUserId;
+
     if (checked) {
-        _bulkSelected.add(ticketId);
+        if (isMyLock) {
+            // Already locked by me — just select
+            _bulkSelected.add(ticketId);
+            _updateCounts();
+            _updateMasterCheckbox();
+            _updateRowHighlight(ticketId, true);
+        } else if (!lockOwner) {
+            // Unlocked — need to lock first, then select
+            _lockAndSelect(ticketId);
+        }
+        // If locked by someone else, do nothing (checkbox should be disabled)
     } else {
-        _bulkSelected.delete(ticketId);
+        if (isMyLock) {
+            // My lock — unlock and deselect
+            _bulkSelected.delete(ticketId);
+            _unlockAndDeselect(ticketId);
+        } else {
+            // Just deselect (shouldn't normally happen)
+            _bulkSelected.delete(ticketId);
+            _updateCounts();
+            _updateMasterCheckbox();
+            _updateRowHighlight(ticketId, false);
+        }
     }
-    _updateCounts();
 }
 
-function bulkToggleSelectAll(checkbox) {
-    var checked = checkbox.checked;
+/**
+ * Lock a ticket via REST, then select it on success.
+ * Shows a pending spinner while the lock is being acquired.
+ */
+function _lockAndSelect(ticketId) {
+    if (_bulkLockPending.has(ticketId)) return;  // Already in-flight
+    _bulkLockPending.add(ticketId);
+    _renderCheckboxCell(ticketId);  // Show spinner
+
+    fetch('/bulk/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_ids: [ticketId], user_id: _bulkUserId })
+    })
+    .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    })
+    .then(function (data) {
+        var locked = data.locked || [];
+        _bulkLockPending.delete(ticketId);
+        if (locked.indexOf(ticketId) !== -1) {
+            // Lock acquired
+            _bulkLocks[ticketId] = _bulkUserId;
+            _bulkSelected.add(ticketId);
+            _showToast('Locked ' + ticketId, 'success');
+        } else {
+            // Lock failed (someone else got it first)
+            _showToast('Could not lock ' + ticketId + ' — already locked by another user', 'warning');
+        }
+        _renderQueue();
+        _updateCounts();
+        _updateMasterCheckbox();
+    })
+    .catch(function (err) {
+        _bulkLockPending.delete(ticketId);
+        _showToast('Lock failed for ' + ticketId + ': ' + err.message, 'error');
+        _renderQueue();
+        _updateCounts();
+    });
+}
+
+/**
+ * Unlock a ticket via REST when the user unchecks it.
+ */
+function _unlockAndDeselect(ticketId) {
+    if (_bulkLockPending.has(ticketId)) return;
+    _bulkLockPending.add(ticketId);
+    _renderCheckboxCell(ticketId);  // Show spinner
+
+    fetch('/bulk/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_ids: [ticketId], user_id: _bulkUserId })
+    })
+    .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    })
+    .then(function (data) {
+        var unlocked = data.unlocked || [];
+        _bulkLockPending.delete(ticketId);
+        if (unlocked.indexOf(ticketId) !== -1) {
+            delete _bulkLocks[ticketId];
+            _bulkSelected.delete(ticketId);
+            delete _bulkRecs[ticketId];
+            delete _bulkOverrides[ticketId];
+            _showToast('Unlocked ' + ticketId, 'info');
+        }
+        _renderQueue();
+        _updateCounts();
+        _updateMasterCheckbox();
+    })
+    .catch(function (err) {
+        _bulkLockPending.delete(ticketId);
+        _showToast('Unlock failed for ' + ticketId + ': ' + err.message, 'error');
+        _renderQueue();
+        _updateCounts();
+    });
+}
+
+/**
+ * Re-render just the checkbox cell for a specific ticket (for pending state).
+ */
+function _renderCheckboxCell(ticketId) {
+    var row = document.querySelector('tr[data-ticket-id="' + ticketId + '"]');
+    if (!row) return;
+    var cell = row.querySelector('.col-checkbox');
+    if (!cell) return;
+
+    if (_bulkLockPending.has(ticketId)) {
+        cell.innerHTML = '<span class="bulk-checkbox-pending" title="Processing…"><span class="rec-spinner"></span></span>';
+    }
+}
+
+/**
+ * Toggle highlight class on a ticket row.
+ */
+function _updateRowHighlight(ticketId, selected) {
+    var row = document.querySelector('tr[data-ticket-id="' + ticketId + '"]');
+    if (row) {
+        if (selected) {
+            row.classList.add('bulk-row-selected');
+        } else {
+            row.classList.remove('bulk-row-selected');
+        }
+    }
+}
+
+/**
+ * Select All My Locked — master checkbox in table header.
+ * Selects or deselects all tickets currently locked by the current user.
+ */
+function bulkToggleSelectAllMine(checked) {
     _bulkQueue.forEach(function (ticket) {
-        if (_bulkLocks[ticket.id] === _bulkUserId) {
+        var lockOwner = _bulkLocks[ticket.id] || null;
+        if (lockOwner === _bulkUserId) {
             if (checked) {
                 _bulkSelected.add(ticket.id);
             } else {
@@ -976,7 +1263,45 @@ function bulkToggleSelectAll(checkbox) {
     });
     _renderQueue();
     _updateCounts();
+    _updateMasterCheckbox();
 }
+
+/**
+ * Update the master checkbox state (checked, unchecked, or indeterminate)
+ * based on how many of the user's locked tickets are selected.
+ */
+function _updateMasterCheckbox() {
+    var cb = document.getElementById('bulkSelectAllCb');
+    if (!cb) return;
+
+    var myLockedCount = 0;
+    var mySelectedCount = 0;
+    _bulkQueue.forEach(function (ticket) {
+        if (_bulkLocks[ticket.id] === _bulkUserId) {
+            myLockedCount++;
+            if (_bulkSelected.has(ticket.id)) mySelectedCount++;
+        }
+    });
+
+    if (myLockedCount === 0) {
+        cb.checked = false;
+        cb.indeterminate = false;
+        cb.disabled = true;
+    } else if (mySelectedCount === 0) {
+        cb.checked = false;
+        cb.indeterminate = false;
+        cb.disabled = false;
+    } else if (mySelectedCount === myLockedCount) {
+        cb.checked = true;
+        cb.indeterminate = false;
+        cb.disabled = false;
+    } else {
+        cb.checked = false;
+        cb.indeterminate = true;
+        cb.disabled = false;
+    }
+}
+
 
 // ── Override Management ───────────────────────────────────────────────
 
@@ -985,6 +1310,9 @@ function bulkUpdateOverride(ticketId, field, value) {
         _bulkOverrides[ticketId] = {};
     }
     _bulkOverrides[ticketId][field] = value;
+
+    // Re-evaluate Assign button state when overrides change
+    _updateCounts();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -1017,9 +1345,19 @@ function _updateCounts() {
     document.getElementById('bulkSelectedCount').textContent = _bulkSelected.size;
 
     // Enable/disable buttons based on state
-    var hasMySelected = _getMySelectedTicketIds().length > 0;
+    var mySelectedIds = _getMySelectedTicketIds();
+    var hasMySelected = mySelectedIds.length > 0;
     document.getElementById('btnRecommend').disabled = !hasMySelected;
-    document.getElementById('btnAssign').disabled = !hasMySelected;
+
+    // Assign button requires at least one selected ticket with a support group assigned
+    var hasAssignable = mySelectedIds.some(function (tid) {
+        var override = _bulkOverrides[tid];
+        return override && override.tier_queue_guid;
+    });
+    document.getElementById('btnAssign').disabled = !hasAssignable;
+
+    // Update master checkbox state
+    _updateMasterCheckbox();
 }
 
 function _setBusy(busy) {
@@ -1092,33 +1430,68 @@ function _loadSupportGroups(ticketType, callback) {
 }
 
 /**
- * Called when the support group input gains focus — load groups and show dropdown.
+ * Toggle the support group dropdown panel open/closed.
  */
-function bulkSgFocus(ticketId, ticketType) {
+function bulkSgToggle(ticketId, ticketType) {
+    var panel = document.getElementById('sgPanel_' + ticketId);
+    if (!panel) return;
+
+    var isOpen = panel.classList.contains('sg-dropdown-panel-open');
+
+    // Close all other open panels first
+    document.querySelectorAll('.sg-dropdown-panel-open').forEach(function (p) {
+        p.classList.remove('sg-dropdown-panel-open');
+    });
+
+    if (isOpen) {
+        // Was open, now closed
+        return;
+    }
+
+    // Open this panel
+    panel.classList.add('sg-dropdown-panel-open');
+    // Clear any inline display style (set by app.js global handler) so the
+    // CSS class .sg-dropdown-panel-open { display: flex } can take effect.
+    panel.style.removeProperty('display');
+
+    // Load groups and populate list
     _loadSupportGroups(ticketType, function () {
         bulkSgFilter(ticketId);
+        // Focus the search input
+        var searchInput = document.getElementById('sgSearch_' + ticketId);
+        if (searchInput) {
+            searchInput.value = '';
+            searchInput.focus();
+        }
     });
 }
 
 /**
- * Filter the support group dropdown based on the current input value.
+ * Filter the support group list based on the search input value.
+ * Splits the query into keywords and matches all of them (AND logic).
  */
 function bulkSgFilter(ticketId) {
-    var input = document.getElementById('sgInput_' + ticketId);
-    var dropdown = document.getElementById('sgDropdown_' + ticketId);
-    if (!input || !dropdown) return;
+    var searchInput = document.getElementById('sgSearch_' + ticketId);
+    var listContainer = document.getElementById('sgList_' + ticketId);
+    if (!searchInput || !listContainer) return;
 
     var ticket = _findTicket(ticketId);
     if (!ticket) return;
 
     var groups = _bulkSupportGroups[ticket.ticket_type] || [];
-    var query = input.value.toLowerCase().trim();
+    var rawQuery = searchInput.value.toLowerCase().trim();
 
-    // Filter groups by substring match
+    // Split query into keywords for AND matching
+    var keywords = rawQuery.length > 0 ? rawQuery.split(/\s+/) : [];
+
+    // Filter groups — all keywords must match (substring)
     var filtered = groups;
-    if (query.length > 0) {
+    if (keywords.length > 0) {
         filtered = groups.filter(function (g) {
-            return g.name.toLowerCase().indexOf(query) !== -1;
+            var nameLower = g.name.toLowerCase();
+            return keywords.every(function (kw) {
+                return nameLower.indexOf(kw) !== -1;
+            });
         });
     }
 
@@ -1126,14 +1499,13 @@ function bulkSgFilter(ticketId) {
     var shown = filtered.slice(0, 50);
 
     if (shown.length === 0) {
-        dropdown.innerHTML = '<div class="sg-autocomplete-no-match">No matching groups</div>';
-        dropdown.style.display = 'block';
+        listContainer.innerHTML = '<div class="sg-dropdown-no-match">No matching groups</div>';
         return;
     }
 
     var html = '';
     shown.forEach(function (g) {
-        html += '<div class="sg-autocomplete-option" ' +
+        html += '<div class="sg-dropdown-option" ' +
             'onmousedown="bulkSgSelect(\'' + _escapeHtml(ticketId) + '\', ' +
             '\'' + _escapeHtml(g.guid) + '\', ' +
             '\'' + _escapeHtml(g.name) + '\')">' +
@@ -1141,29 +1513,37 @@ function bulkSgFilter(ticketId) {
     });
 
     if (filtered.length > 50) {
-        html += '<div class="sg-autocomplete-more">… and ' + (filtered.length - 50) + ' more (type to narrow)</div>';
+        html += '<div class="sg-dropdown-more">… and ' + (filtered.length - 50) + ' more (refine your search)</div>';
     }
 
-    dropdown.innerHTML = html;
-    dropdown.style.display = 'block';
+    listContainer.innerHTML = html;
 }
 
 /**
- * Select a support group from the autocomplete dropdown.
+ * Select a support group from the dropdown list.
  */
 function bulkSgSelect(ticketId, guid, name) {
-    var input = document.getElementById('sgInput_' + ticketId);
+    var toggle = document.getElementById('sgToggle_' + ticketId);
     var guidInput = document.getElementById('sgGuid_' + ticketId);
-    var dropdown = document.getElementById('sgDropdown_' + ticketId);
+    var panel = document.getElementById('sgPanel_' + ticketId);
 
-    if (input) input.value = name;
+    // Update toggle button text
+    if (toggle) {
+        var textSpan = toggle.querySelector('.sg-dropdown-toggle-text');
+        if (textSpan) textSpan.textContent = name;
+        toggle.classList.add('sg-dropdown-has-value');
+    }
     if (guidInput) guidInput.value = guid;
-    if (dropdown) dropdown.style.display = 'none';
+    // Close the panel
+    if (panel) panel.classList.remove('sg-dropdown-panel-open');
 
     // Update override
     if (!_bulkOverrides[ticketId]) _bulkOverrides[ticketId] = {};
     _bulkOverrides[ticketId].tier_queue_name = name;
     _bulkOverrides[ticketId].tier_queue_guid = guid;
+
+    // Re-evaluate Assign button state since a support group was assigned
+    _updateCounts();
 }
 
 /**
@@ -1243,13 +1623,43 @@ function bulkManualAssign(ticketId) {
     });
 }
 
-// Close autocomplete dropdowns when clicking outside
+// Close support group dropdown panels when clicking outside
 document.addEventListener('click', function (evt) {
-    if (!evt.target.closest('.sg-autocomplete-wrapper')) {
-        var dropdowns = document.querySelectorAll('.sg-autocomplete-dropdown');
-        dropdowns.forEach(function (dd) { dd.style.display = 'none'; });
+    if (!evt.target.closest('.sg-dropdown-wrapper')) {
+        document.querySelectorAll('.sg-dropdown-panel-open').forEach(function (panel) {
+            panel.classList.remove('sg-dropdown-panel-open');
+        });
     }
 });
+
+// ── Presence Rendering ────────────────────────────────────────────────
+
+/**
+ * Render the list of online users in the presence bar.
+ * Shows colored badges for each user, highlighting the current user.
+ */
+function _renderPresence() {
+    var container = document.getElementById('bulkPresenceList');
+    if (!container) return;
+
+    if (_bulkOnlineUsers.length === 0) {
+        container.innerHTML = '—';
+        return;
+    }
+
+    var html = '';
+    _bulkOnlineUsers.forEach(function (uid) {
+        var isMe = uid === _bulkUserId;
+        var cls = 'bulk-presence-badge' + (isMe ? ' me' : '');
+        var label = isMe ? uid + ' (you)' : uid;
+        var dotColor = isMe ? _USER_COLOR_SELF : (_bulkUserColors[uid] || '#e74c3c');
+        var dotTitle = isMe ? 'Your locks show as ●' : 'Their locks show as ●';
+        html += '<span class="' + cls + '" title="' + _escapeHtml(uid) + ' — ' + dotTitle + '">' +
+            '<span class="bulk-presence-dot" style="background-color:' + dotColor + ';"></span>' +
+            _escapeHtml(label) + '</span>';
+    });
+    container.innerHTML = html;
+}
 
 // ── Toast Notifications ───────────────────────────────────────────────
 

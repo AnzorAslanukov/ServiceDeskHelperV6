@@ -1,0 +1,11 @@
+# Initial subset load (10K most recent tickets)
+python -m exploration.populate_ticket_embeddings --limit 10000
+
+# Full load (all ~915K tickets)
+python -m exploration.populate_ticket_embeddings --mode full
+
+# Incremental update (only new tickets since last run)
+python -m exploration.populate_ticket_embeddings --mode incremental
+
+# Dry run (preview without inserting)
+python -m exploration.populate_ticket_embeddings --dry-run --limit 100
