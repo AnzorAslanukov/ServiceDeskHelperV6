@@ -22,7 +22,7 @@ import time
 SERVER = "AslanukA@10.192.46.182"
 PROJECT_DIR = r"C:\projects\service_desk_helper"
 SERVER_URL = "http://10.192.46.182:8000/health"
-SSH_OPTS = "-o BatchMode=yes -o ConnectTimeout=10"
+SSH_OPTS = "-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -98,6 +98,10 @@ def main():
     banner()
     total_steps = 6
     errors = []
+
+    # Pre-flight: fix git safe.directory (needed when double-clicked from Explorer)
+    project_dir = os.path.dirname(os.path.abspath(__file__)).replace("\\", "/")
+    run_local(f'git config --global --add safe.directory "{project_dir}"')
 
     # Step 1: Git commit & push
     step(1, total_steps, "Pushing local changes to GitHub")
