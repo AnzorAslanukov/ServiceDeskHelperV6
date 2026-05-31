@@ -144,17 +144,16 @@ def main():
     success("Server stopped")
     time.sleep(2)
 
-    # Step 5: Start server (use schtasks for reliable detached launch via SSH)
-    step(5, total_steps, "Starting server (detached)")
-    # Create a one-shot scheduled task that starts immediately and deletes itself
-    ssh(
-        "schtasks /create /tn SDH_Start /tr "
-        f"\"cmd /c cd /d {PROJECT_DIR} ^& python -m uvicorn src.main:app --host 0.0.0.0 --port 8000\" "
-        "/sc once /st 00:00 /f /ru AslanukA"
+    # Step 5: Start server via background SSH session (only reliable method)
+    step(5, total_steps, "Starting server (background SSH session)")
+    start_cmd = (
+        f'start /b ssh {SSH_OPTS} {SERVER} '
+        f'"Set-Location \'{PROJECT_DIR}\'; python -m uvicorn src.main:app --host 0.0.0.0 --port 8000" '
+        f'> nul 2>&1'
     )
-    ssh("schtasks /run /tn SDH_Start")
-    ssh("schtasks /delete /tn SDH_Start /f")
-    success("Server process launched via scheduled task")
+    info(start_cmd)
+    subprocess.Popen(start_cmd, shell=True)
+    success("Server starting in background SSH session")
 
     # Step 6: Verify
     step(6, total_steps, "Verifying server is responding")
