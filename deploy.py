@@ -123,14 +123,15 @@ def main():
         error("Git push failed — do you have uncommitted changes or conflicts?")
         errors.append("git push")
 
-    # Step 2: Pull on server
-    step(2, total_steps, "Pulling latest code on workstation")
-    ok, _ = ssh(f"Set-Location '{PROJECT_DIR}'; git pull origin master")
+    # Step 2: Force-sync server to match GitHub (workstation is deploy-only)
+    step(2, total_steps, "Syncing workstation code to GitHub (force reset)")
+    ssh(f"Set-Location '{PROJECT_DIR}'; git fetch origin master")
+    ok, _ = ssh(f"Set-Location '{PROJECT_DIR}'; git reset --hard origin/master")
     if ok:
-        success("Code updated on workstation")
+        success("Code synced to latest GitHub commit")
     else:
-        # git pull may return exit code 1 due to PowerShell stderr
-        success("Pull completed (check output above)")
+        error("Git reset failed on workstation")
+        errors.append("git sync")
 
     # Step 3: Install dependencies
     step(3, total_steps, "Installing dependencies")
