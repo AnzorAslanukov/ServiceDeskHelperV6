@@ -26,11 +26,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ui", tags=["frontend"])
 
 # Templates directory
-# Note: cache_size=0 disables Jinja2 template caching to work around a
-# Python 3.14 compatibility issue (unhashable cache key with dict globals).
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-templates.env.cache = {}  # Disable LRU cache (Python 3.14 compat workaround)
 
 
 # ── Page Routes ────────────────────────────────────────────────────────
@@ -46,8 +43,7 @@ async def index(request: Request):
 async def search_page(request: Request):
     """Render the Enhanced Ticket Search page."""
     return templates.TemplateResponse(
-        "search/index.html",
-        {"request": request, "active_page": "search"},
+        request, "search/index.html", {"active_page": "search"}
     )
 
 
@@ -55,8 +51,7 @@ async def search_page(request: Request):
 async def chat_page(request: Request):
     """Render the Q&A Chatbot page."""
     return templates.TemplateResponse(
-        "chat/index.html",
-        {"request": request, "active_page": "chat"},
+        request, "chat/index.html", {"active_page": "chat"}
     )
 
 
@@ -64,8 +59,7 @@ async def chat_page(request: Request):
 async def assignment_page(request: Request):
     """Render the Ticket Assignment Recommendation page."""
     return templates.TemplateResponse(
-        "assignment/index.html",
-        {"request": request, "active_page": "assignment"},
+        request, "assignment/index.html", {"active_page": "assignment"}
     )
 
 
@@ -94,15 +88,14 @@ async def search_field_partial(
             page_size=page_size,
         )
         return templates.TemplateResponse(
+            request,
             "search/partials/field_results.html",
             {
-                "request": request,
                 "tickets": [t.model_dump() for t in result.tickets],
                 "total": result.total,
                 "page": result.page,
                 "page_size": result.page_size,
                 "has_more": result.has_more,
-                # Pass form values for pagination re-submission
                 "form_field": field,
                 "form_value": value,
                 "form_operator": operator,
@@ -112,8 +105,9 @@ async def search_field_partial(
     except Exception as e:
         logger.exception("Field search failed")
         return templates.TemplateResponse(
+            request,
             "search/partials/field_results.html",
-            {"request": request, "error": str(e), "tickets": [], "total": 0},
+            {"error": str(e), "tickets": [], "total": 0},
         )
 
 
@@ -135,15 +129,14 @@ async def search_description_partial(
             page_size=page_size,
         )
         return templates.TemplateResponse(
+            request,
             "search/partials/description_results.html",
             {
-                "request": request,
                 "tickets": [t.model_dump() for t in result.tickets],
                 "total": result.total,
                 "page": result.page,
                 "page_size": result.page_size,
                 "has_more": result.has_more,
-                # Pass form values for pagination re-submission
                 "form_text": text,
                 "form_ticket_type": ticket_type,
             },
@@ -151,8 +144,9 @@ async def search_description_partial(
     except Exception as e:
         logger.exception("Description search failed")
         return templates.TemplateResponse(
+            request,
             "search/partials/description_results.html",
-            {"request": request, "error": str(e), "tickets": [], "total": 0},
+            {"error": str(e), "tickets": [], "total": 0},
         )
 
 
@@ -170,9 +164,9 @@ async def search_semantic_partial(
             top_k=top_k,
         )
         return templates.TemplateResponse(
+            request,
             "search/partials/semantic_results.html",
             {
-                "request": request,
                 "similar_tickets": [t.model_dump() for t in result.similar_tickets],
                 "documentation": [d.model_dump() for d in result.documentation],
             },
@@ -180,9 +174,9 @@ async def search_semantic_partial(
     except Exception as e:
         logger.exception("Semantic search failed")
         return templates.TemplateResponse(
+            request,
             "search/partials/semantic_results.html",
             {
-                "request": request,
                 "error": str(e),
                 "similar_tickets": [],
                 "documentation": [],
@@ -201,8 +195,9 @@ async def ticket_detail_partial(
         raw = await athena.get_ticket(ticket_id)
         ticket = TicketSearchService._map_ticket(raw)
         return templates.TemplateResponse(
+            request,
             "search/partials/ticket_detail.html",
-            {"request": request, "ticket": ticket.model_dump()},
+            {"ticket": ticket.model_dump()},
         )
     except Exception as e:
         logger.exception("Ticket detail fetch failed for %s", ticket_id)
@@ -226,9 +221,9 @@ async def assignment_recommend_partial(
             ticket_id=ticket_id,
         )
         return templates.TemplateResponse(
+            request,
             "assignment/partials/recommendation.html",
             {
-                "request": request,
                 "ticket": result.ticket.model_dump(),
                 "recommendation": result.recommendation.model_dump(),
             },
@@ -236,8 +231,9 @@ async def assignment_recommend_partial(
     except ValueError as e:
         # Validation errors from _validate_and_normalize_ticket_id() — user-friendly messages
         return templates.TemplateResponse(
+            request,
             "assignment/partials/recommendation.html",
-            {"request": request, "error": str(e)},
+            {"error": str(e)},
         )
     except Exception as e:
         logger.exception("Assignment recommendation failed for %s", ticket_id)
@@ -248,8 +244,9 @@ async def assignment_recommend_partial(
         else:
             error_msg = f"Failed to generate recommendation: {error_msg}"
         return templates.TemplateResponse(
+            request,
             "assignment/partials/recommendation.html",
-            {"request": request, "error": error_msg},
+            {"error": error_msg},
         )
 
 
@@ -270,18 +267,18 @@ async def search_similar_partial(
             top_k=top_k,
         )
         return templates.TemplateResponse(
+            request,
             "search/partials/similar_results.html",
             {
-                "request": request,
                 "source_ticket_id": result.source_ticket_id,
                 "similar_tickets": [t.model_dump() for t in result.similar_tickets],
             },
         )
     except ValueError as e:
         return templates.TemplateResponse(
+            request,
             "search/partials/similar_results.html",
             {
-                "request": request,
                 "error": str(e),
                 "source_ticket_id": ticket_id,
                 "similar_tickets": [],
@@ -290,9 +287,9 @@ async def search_similar_partial(
     except Exception as e:
         logger.exception("Similar ticket search failed")
         return templates.TemplateResponse(
+            request,
             "search/partials/similar_results.html",
             {
-                "request": request,
                 "error": str(e),
                 "source_ticket_id": ticket_id,
                 "similar_tickets": [],
