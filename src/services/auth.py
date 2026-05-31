@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 
 import ldap3
-from ldap3 import Server, Connection, ALL, NTLM, SUBTREE
+from ldap3 import Server, Connection, ALL, SUBTREE
 from ldap3.core.exceptions import LDAPBindError, LDAPException
 
 logger = logging.getLogger(__name__)
@@ -60,14 +60,15 @@ class AuthService:
         if not username or not password:
             return None
 
-        # Attempt LDAP bind
+        # Attempt LDAP bind using SIMPLE auth with UPN format
+        # (NTLM requires MD4 which is removed in Python 3.14)
+        upn = f"{username}@UPHS.PENNHEALTH.PRV"
         try:
             server = Server(self.ldap_server, get_info=ALL, connect_timeout=10)
             conn = Connection(
                 server,
-                user=f"{self.ldap_domain}\\{username}",
+                user=upn,
                 password=password,
-                authentication=NTLM,
                 auto_bind=True,
                 receive_timeout=10,
             )
