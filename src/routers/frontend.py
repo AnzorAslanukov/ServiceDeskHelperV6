@@ -26,8 +26,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ui", tags=["frontend"])
 
 # Templates directory
+# Note: cache_size=0 disables Jinja2 template caching to work around a
+# Python 3.14 compatibility issue (unhashable cache key with dict globals).
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.cache = {}  # Disable LRU cache (Python 3.14 compat workaround)
 
 
 # ── Page Routes ────────────────────────────────────────────────────────
