@@ -58,6 +58,12 @@
                             🌙
                         </button>
                     </div>
+                    {% if request.state.user %}
+                    <div class="user-indicator">
+                        <span class="user-name">👤 {{ request.state.user.display_name }}</span>
+                        <a href="/logout" class="logout-btn" title="Sign out">Logout</a>
+                    </div>
+                    {% endif %}
                 </div>
             </header>
 

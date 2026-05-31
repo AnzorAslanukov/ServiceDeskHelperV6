@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     databricks_server_hostname: str = Field(alias="DATABRICKS_SERVER_HOSTNAME")
     databricks_http_path: str = Field(alias="DATABRICKS_HTTP_PATH")
 
+    # Authentication (LDAP)
+    ldap_server: str = Field(default="ldap://uphs.pennhealth.prv", alias="LDAP_SERVER")
+    ldap_domain: str = Field(default="UPHS", alias="LDAP_DOMAIN")
+    allowed_ad_groups: str = Field(
+        default="IS SD Team,Athena Users", alias="ALLOWED_AD_GROUPS"
+    )
+    allowed_usernames: str = Field(default="aslanuka", alias="ALLOWED_USERNAMES")
+    session_secret_key: str = Field(alias="SESSION_SECRET_KEY")
+    session_expire_hours: float = Field(default=12.0, alias="SESSION_EXPIRE_HOURS")
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

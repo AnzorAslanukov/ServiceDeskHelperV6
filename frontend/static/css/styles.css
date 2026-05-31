@@ -313,7 +313,36 @@ a:hover {
 .header-right {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 1rem;
+}
+
+.user-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding-left: 1rem;
+    border-left: 1px solid var(--border-color);
+}
+
+.user-name {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.logout-btn {
+    font-size: 0.8rem;
+    color: var(--accent-color);
+    text-decoration: none;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--accent-color);
+    border-radius: 4px;
+    transition: all 0.2s;
+}
+
+.logout-btn:hover {
+    background: var(--accent-color);
+    color: white;
 }
 
 /* ── Theme Toggle ──────────────────────────────────────────────────── */
