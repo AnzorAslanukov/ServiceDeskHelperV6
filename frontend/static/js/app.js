@@ -1173,33 +1173,6 @@ function _escapeAttr(text) {
 //  Assignment UI — Feature #3: Ticket Assignment Recommendation
 // ══════════════════════════════════════════════════════════════════════
 
-// ── Settings Toggle ───────────────────────────────────────────────────
-
-function toggleAssignmentSettings() {
-    var panel = document.getElementById('assignmentSettings');
-    if (panel) {
-        panel.style.display = panel.style.display === 'none' ? '' : 'none';
-    }
-}
-
-// ── Prepare Submission (sync hidden fields with sliders) ──────────────
-
-function prepareAssignmentSubmit() {
-    var topKDocs = document.getElementById('assignTopKDocs');
-    var topKTickets = document.getElementById('assignTopKTickets');
-    var maxTokens = document.getElementById('assignMaxTokens');
-
-    var topKDocsHidden = document.getElementById('assignTopKDocsHidden');
-    var topKTicketsHidden = document.getElementById('assignTopKTicketsHidden');
-    var maxTokensHidden = document.getElementById('assignMaxTokensHidden');
-
-    if (topKDocs && topKDocsHidden) topKDocsHidden.value = topKDocs.value;
-    if (topKTickets && topKTicketsHidden) topKTicketsHidden.value = topKTickets.value;
-    if (maxTokens && maxTokensHidden) maxTokensHidden.value = maxTokens.value;
-
-    return true; // allow form submission
-}
-
 // ── Copy to Clipboard (generic) ───────────────────────────────────────
 
 function copyToClipboard(btn, text) {

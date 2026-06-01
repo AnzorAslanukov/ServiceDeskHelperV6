@@ -50,9 +50,6 @@ class AssignmentRecommendation(BaseModel):
     method: str = Field(
         description="Method used: 'classifier' or 'triage_rule'.",
     )
-    rationale: str = Field(
-        description="Brief explanation of why this group was recommended.",
-    )
     alternatives: list[ClassifierPrediction] = Field(
         default_factory=list,
         description="Alternative predictions ranked by confidence.",

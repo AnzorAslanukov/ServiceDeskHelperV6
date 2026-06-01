@@ -11,44 +11,6 @@
             <div class="d-flex align-center gap-2">
                 <h2>🎯 Get AI Recommendation</h2>
             </div>
-            <div class="d-flex align-center gap-2">
-                <button class="btn btn-sm btn-secondary" onclick="toggleAssignmentSettings()" title="Settings">
-                    ⚙️ Settings
-                </button>
-            </div>
-        </div>
-
-        <!-- Settings Panel (collapsed by default) -->
-        <div class="assignment-settings" id="assignmentSettings" style="display:none;">
-            <div class="assignment-settings-inner">
-                <div class="form-group">
-                    <label class="form-label">Documentation Results</label>
-                    <div class="range-group">
-                        <input type="range" class="form-range" id="assignTopKDocs" min="1" max="20" value="5"
-                               oninput="updateRangeDisplay('assignTopKDocs','assignTopKDocsVal')">
-                        <span class="range-value" id="assignTopKDocsVal">5</span>
-                    </div>
-                    <div class="form-hint">Number of knowledge base articles to retrieve for context</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Similar Tickets</label>
-                    <div class="range-group">
-                        <input type="range" class="form-range" id="assignTopKTickets" min="1" max="20" value="5"
-                               oninput="updateRangeDisplay('assignTopKTickets','assignTopKTicketsVal')">
-                        <span class="range-value" id="assignTopKTicketsVal">5</span>
-                    </div>
-                    <div class="form-hint">Number of similar historical tickets to retrieve for context</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Max Response Length</label>
-                    <div class="range-group">
-                        <input type="range" class="form-range" id="assignMaxTokens" min="100" max="4096" step="100" value="2048"
-                               oninput="updateRangeDisplay('assignMaxTokens','assignMaxTokensVal')">
-                        <span class="range-value" id="assignMaxTokensVal">2048</span>
-                    </div>
-                    <div class="form-hint">Maximum tokens in the AI response</div>
-                </div>
-            </div>
         </div>
 
         <!-- Ticket ID Input -->
@@ -57,8 +19,7 @@
                   hx-post="/ui/assignment/recommend"
                   hx-target="#assignmentResults"
                   hx-swap="innerHTML"
-                  hx-indicator="#assignmentLoading"
-                  onsubmit="return prepareAssignmentSubmit()">
+                  hx-indicator="#assignmentLoading">
                 <div class="assignment-input-row">
                     <div class="form-group assignment-ticket-input-group">
                         <label class="form-label" for="assignTicketId">Ticket ID</label>
@@ -72,10 +33,6 @@
                                pattern="^[IiSs][Rr]\d+$"
                                title="Enter a valid ticket ID starting with IR or SR followed by numbers (case-insensitive)">
                     </div>
-                    <!-- Hidden fields for settings -->
-                    <input type="hidden" name="top_k_docs" id="assignTopKDocsHidden" value="5">
-                    <input type="hidden" name="top_k_tickets" id="assignTopKTicketsHidden" value="5">
-                    <input type="hidden" name="max_tokens" id="assignMaxTokensHidden" value="2048">
                     <div class="assignment-submit-group">
                         <button type="submit" class="btn btn-primary assignment-submit-btn" id="assignSubmitBtn">
                             🎯 Get Recommendation
@@ -84,7 +41,7 @@
                 </div>
             </form>
             <div class="assignment-input-hint">
-                Enter an Incident (IR) or Service Request (SR) ticket ID to get an AI-recommended support group and priority. Case-insensitive — both <code>ir1234567</code> and <code>IR1234567</code> work.
+                Enter an Incident (IR) or Service Request (SR) ticket ID to get a recommended support group. Case-insensitive — both <code>ir1234567</code> and <code>IR1234567</code> work.
             </div>
         </div>
     </div>
@@ -95,7 +52,7 @@
             <div class="assignment-loading-spinner"></div>
             <div class="assignment-loading-text">
                 <strong>Analyzing ticket…</strong>
-                <span>Fetching ticket → Searching knowledge base → Generating recommendation</span>
+                <span>Fetching ticket → Running classifier → Generating recommendation</span>
             </div>
         </div>
     </div>

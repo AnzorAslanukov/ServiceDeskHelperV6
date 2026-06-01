@@ -459,8 +459,6 @@ class AssignmentService:
                 support_group_guid=group_guid,
                 confidence=1.0,
                 method="triage_rule",
-                rationale=f"Matched specific triage rule for '{group_name}'. "
-                          "This ticket pattern is routed directly based on known assignment patterns.",
                 alternatives=[],
             )
             return AssignmentResponse(
@@ -479,8 +477,6 @@ class AssignmentService:
                 support_group_guid=sd_guid,
                 confidence=1.0,
                 method="triage_rule",
-                rationale="Matched Service Desk triage rule: ticket matches password reset, "
-                          "MyChart, account lockout, or general inquiry pattern.",
                 alternatives=[],
             )
             return AssignmentResponse(
@@ -507,7 +503,6 @@ class AssignmentService:
                 support_group_guid=sd_guid,
                 confidence=0.0,
                 method="classifier",
-                rationale="Classifier returned no predictions. Defaulting to Service Desk.",
                 alternatives=[],
             )
             return AssignmentResponse(
@@ -536,7 +531,6 @@ class AssignmentService:
             support_group_guid=top_guid,
             confidence=top_confidence,
             method="classifier",
-            rationale=f"TF-IDF classifier prediction with {top_confidence:.1%} confidence.",
             alternatives=alternatives,
         )
 
