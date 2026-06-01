@@ -121,7 +121,7 @@ async def test_search_by_description_returns_results(
     filters = call_args[0][0]
     word_filters = filters[0]["filters"]
     assert len(word_filters) == 3
-    assert all(f["property"] == "description" for f in word_filters)
+    assert all(f["property"] == "Description" for f in word_filters)
     assert all(f["operator"] == "contains" for f in word_filters)
     assert word_filters[0]["value"] == "printer"
     assert word_filters[1]["value"] == "not"
@@ -537,7 +537,7 @@ def test_build_description_filter_single_word():
     assert len(filters) == 1
     assert len(filters[0]["filters"]) == 1
     inner = filters[0]["filters"][0]
-    assert inner["property"] == "description"
+    assert inner["property"] == "Description"
     assert inner["operator"] == "contains"
     assert inner["value"] == "printer"
 
@@ -549,10 +549,10 @@ def test_build_description_filter_multi_word():
     assert len(filters) == 1
     word_filters = filters[0]["filters"]
     assert len(word_filters) == 2
-    assert word_filters[0]["property"] == "description"
+    assert word_filters[0]["property"] == "Description"
     assert word_filters[0]["operator"] == "contains"
     assert word_filters[0]["value"] == "cerner"
-    assert word_filters[1]["property"] == "description"
+    assert word_filters[1]["property"] == "Description"
     assert word_filters[1]["operator"] == "contains"
     assert word_filters[1]["value"] == "printer"
 

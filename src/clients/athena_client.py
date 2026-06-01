@@ -379,7 +379,7 @@ class AthenaClient:
         word_filters: list[dict[str, Any]] = [
             {
                 "condition": "and",
-                "property": "description",
+                "property": "Description",
                 "operator": "contains",
                 "value": word,
             }
