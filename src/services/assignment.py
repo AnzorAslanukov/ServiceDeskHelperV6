@@ -635,6 +635,9 @@ class AssignmentService:
         elif isinstance(created_by_obj, str):
             created_by = created_by_obj
 
+        # Extract location with full path (parent\child format)
+        location = self._extract_location_path(raw_ticket)
+
         return TicketInfo(
             id=ticket_id,
             ticket_type=ticket_type,
@@ -646,7 +649,7 @@ class AssignmentService:
             affected_user=affected_user_name,
             affected_user_title=affected_user_title,
             affected_user_phone=affected_user_phone,
-            location=get_field(raw_ticket, "location"),
+            location=location,
             floor=get_field(raw_ticket, "floor"),
             room=get_field(raw_ticket, "room"),
             classification=get_field(raw_ticket, "classificationPath", "classification"),
@@ -655,3 +658,45 @@ class AssignmentService:
             created_date=get_field(raw_ticket, "createdDate", "createDate"),
             modified_date=get_field(raw_ticket, "lastModifiedDate", "lastModified"),
         )
+
+    @staticmethod
+    def _extract_location_path(raw_ticket: dict[str, Any]) -> str | None:
+        """
+        Extract the full location path (e.g., 'PPMC\\OTHER') from the ticket.
+
+        The Athena API returns location in different formats:
+        - View endpoint: 'locationValue' companion field (may be leaf or full path)
+        - Object endpoint: 'location' as dict with 'path', 'fullName', 'name', etc.
+
+        Priority order for full path:
+        1. locationValue (view endpoint companion field — often has full path)
+        2. location dict → path / fullName (hierarchical path)
+        3. location dict → name / displayName (leaf name fallback)
+        4. location as plain string
+        """
+        # 1. Check locationValue companion (view endpoint format)
+        location_value = raw_ticket.get("locationValue")
+        if location_value and isinstance(location_value, str):
+            return location_value
+
+        # 2. Check location field
+        loc = raw_ticket.get("location")
+        if loc is None:
+            return None
+
+        if isinstance(loc, dict):
+            # Prefer full path fields
+            full_path = loc.get("path") or loc.get("fullName") or loc.get("fullname")
+            if full_path:
+                return full_path
+            # Fall back to name/displayName (leaf only)
+            return loc.get("name") or loc.get("displayName")
+
+        if isinstance(loc, str):
+            # Check if it's a GUID (skip it)
+            import re
+            if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', loc, re.IGNORECASE):
+                return None
+            return loc
+
+        return None
