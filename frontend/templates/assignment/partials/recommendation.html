@@ -95,64 +95,158 @@
     </div>
     {% endif %}
 
-    <!-- Ticket Info Card -->
+    <!-- Ticket Details Card — Grouped Sections -->
     <div class="card assignment-ticket-card">
         <div class="card-header">
             <h3>📋 Ticket Details</h3>
+            <span class="badge badge-neutral">{{ ticket.id }}</span>
         </div>
         <div class="assignment-ticket-body">
-            <div class="ticket-info-grid">
-                <div class="ticket-info-item">
-                    <span class="ticket-info-label">Ticket ID:</span>
-                    <span class="ticket-info-value">{{ ticket.id }}</span>
+
+            <!-- Section: Affected User Info -->
+            <div class="ticket-section">
+                <div class="ticket-section-header">👤 Affected User</div>
+                <div class="ticket-section-grid">
+                    {% if ticket.affected_user %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Name:</span>
+                        <span class="ticket-field-value ticket-field-highlight">{{ ticket.affected_user }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.affected_user_title %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Job Title:</span>
+                        <span class="ticket-field-value">{{ ticket.affected_user_title }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.affected_user_phone %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Phone:</span>
+                        <span class="ticket-field-value">{{ ticket.affected_user_phone }}</span>
+                    </div>
+                    {% endif %}
                 </div>
-                <div class="ticket-info-item">
-                    <span class="ticket-info-label">Type:</span>
-                    <span class="ticket-info-value">{{ ticket.ticket_type }}</span>
-                </div>
-                {% if ticket.title %}
-                <div class="ticket-info-item ticket-info-full">
-                    <span class="ticket-info-label">Title:</span>
-                    <span class="ticket-info-value">{{ ticket.title }}</span>
-                </div>
-                {% endif %}
-                {% if ticket.location %}
-                <div class="ticket-info-item">
-                    <span class="ticket-info-label">Location:</span>
-                    <span class="ticket-info-value">{{ ticket.location }}</span>
-                </div>
-                {% endif %}
-                {% if ticket.support_group %}
-                <div class="ticket-info-item">
-                    <span class="ticket-info-label">Current Group:</span>
-                    <span class="ticket-info-value">{{ ticket.support_group }}</span>
-                </div>
-                {% endif %}
-                {% if ticket.status %}
-                <div class="ticket-info-item">
-                    <span class="ticket-info-label">Status:</span>
-                    <span class="ticket-info-value">{{ ticket.status }}</span>
-                </div>
-                {% endif %}
-                {% if ticket.priority %}
-                <div class="ticket-info-item">
-                    <span class="ticket-info-label">Priority:</span>
-                    <span class="ticket-info-value">{{ ticket.priority }}</span>
-                </div>
-                {% endif %}
-                {% if ticket.affected_user %}
-                <div class="ticket-info-item">
-                    <span class="ticket-info-label">Affected User:</span>
-                    <span class="ticket-info-value">{{ ticket.affected_user }}</span>
-                </div>
-                {% endif %}
             </div>
-            {% if ticket.description %}
-            <div class="ticket-description">
-                <span class="ticket-info-label">Description:</span>
-                <p class="ticket-description-text">{{ ticket.description[:500] }}{% if ticket.description|length > 500 %}...{% endif %}</p>
+
+            <!-- Section: Location Info -->
+            <div class="ticket-section">
+                <div class="ticket-section-header">📍 Location</div>
+                <div class="ticket-section-grid">
+                    {% if ticket.location %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Location:</span>
+                        <span class="ticket-field-value ticket-field-location">{{ ticket.location }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.floor %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Floor:</span>
+                        <span class="ticket-field-value">{{ ticket.floor }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.room %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Room:</span>
+                        <span class="ticket-field-value">{{ ticket.room }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Section: Ticket Status -->
+            <div class="ticket-section">
+                <div class="ticket-section-header">📊 Status & Routing</div>
+                <div class="ticket-section-grid">
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Type:</span>
+                        <span class="ticket-field-value">
+                            {% if ticket.ticket_type == "incident" %}
+                            <span class="ticket-type-badge ticket-type-ir">Incident</span>
+                            {% else %}
+                            <span class="ticket-type-badge ticket-type-sr">Service Request</span>
+                            {% endif %}
+                        </span>
+                    </div>
+                    {% if ticket.status %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Status:</span>
+                        <span class="ticket-field-value">
+                            <span class="ticket-status-badge">{{ ticket.status }}</span>
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.priority %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Priority:</span>
+                        <span class="ticket-field-value">
+                            <span class="ticket-priority-badge priority-{{ ticket.priority }}">{{ ticket.priority }}</span>
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.support_group %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Current Group:</span>
+                        <span class="ticket-field-value ticket-field-group">{{ ticket.support_group }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.classification %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Classification:</span>
+                        <span class="ticket-field-value">{{ ticket.classification }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Section: Creation Info -->
+            <div class="ticket-section">
+                <div class="ticket-section-header">🕐 Creation Info</div>
+                <div class="ticket-section-grid">
+                    {% if ticket.created_by %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Created by:</span>
+                        <span class="ticket-field-value">{{ ticket.created_by }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.source %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Source:</span>
+                        <span class="ticket-field-value">
+                            <span class="ticket-source-badge">{{ ticket.source }}</span>
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.created_date %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Created:</span>
+                        <span class="ticket-field-value">{{ ticket.created_date }}</span>
+                    </div>
+                    {% endif %}
+                    {% if ticket.modified_date %}
+                    <div class="ticket-field">
+                        <span class="ticket-field-label">Modified:</span>
+                        <span class="ticket-field-value">{{ ticket.modified_date }}</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Section: Title -->
+            {% if ticket.title %}
+            <div class="ticket-section">
+                <div class="ticket-section-header">📝 Title</div>
+                <div class="ticket-title-text">{{ ticket.title }}</div>
             </div>
             {% endif %}
+
+            <!-- Section: Description (full, no truncation) -->
+            {% if ticket.description %}
+            <div class="ticket-section">
+                <div class="ticket-section-header">📄 Description</div>
+                <div class="ticket-description-full">{{ ticket.description }}</div>
+            </div>
+            {% endif %}
+
         </div>
     </div>
 

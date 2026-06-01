@@ -602,6 +602,39 @@ class AssignmentService:
                     return val
             return None
 
+        def get_nested(data: dict, outer_key: str, inner_key: str) -> Any:
+            """Get a field from a nested dict."""
+            outer = data.get(outer_key)
+            if isinstance(outer, dict):
+                return outer.get(inner_key)
+            return None
+
+        # Extract affected user details from nested object
+        affected_user_obj = raw_ticket.get("affectedUser")
+        affected_user_name = None
+        affected_user_title = None
+        affected_user_phone = None
+        if isinstance(affected_user_obj, dict):
+            affected_user_name = affected_user_obj.get("displayName") or affected_user_obj.get("userName")
+            affected_user_title = affected_user_obj.get("title")
+            affected_user_phone = affected_user_obj.get("businessPhone") or affected_user_obj.get("mobile")
+        elif isinstance(affected_user_obj, str):
+            affected_user_name = affected_user_obj
+
+        # Fallback for flat format (view endpoint)
+        if not affected_user_name:
+            affected_user_name = raw_ticket.get("affectedUser_DisplayName")
+        if not affected_user_title:
+            affected_user_title = raw_ticket.get("affectedUserTitle")
+
+        # Extract created by
+        created_by_obj = raw_ticket.get("createdBy")
+        created_by = None
+        if isinstance(created_by_obj, dict):
+            created_by = created_by_obj.get("displayName") or created_by_obj.get("userName")
+        elif isinstance(created_by_obj, str):
+            created_by = created_by_obj
+
         return TicketInfo(
             id=ticket_id,
             ticket_type=ticket_type,
@@ -610,10 +643,15 @@ class AssignmentService:
             status=get_field(raw_ticket, "status"),
             priority=get_field(raw_ticket, "priority"),
             support_group=get_field(raw_ticket, "tierQueue", "supportGroup", "assignedGroup"),
-            affected_user=get_field(raw_ticket, "affectedUser", "requestedFor"),
-            affected_user_title=get_field(raw_ticket, "affectedUserTitle"),
+            affected_user=affected_user_name,
+            affected_user_title=affected_user_title,
+            affected_user_phone=affected_user_phone,
             location=get_field(raw_ticket, "location"),
+            floor=get_field(raw_ticket, "floor"),
+            room=get_field(raw_ticket, "room"),
             classification=get_field(raw_ticket, "classificationPath", "classification"),
             source=get_field(raw_ticket, "source"),
+            created_by=created_by,
             created_date=get_field(raw_ticket, "createdDate", "createDate"),
+            modified_date=get_field(raw_ticket, "lastModifiedDate", "lastModified"),
         )

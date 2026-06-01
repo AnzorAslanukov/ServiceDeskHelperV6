@@ -62,16 +62,21 @@ class TicketInfo(BaseModel):
     id: str = Field(description="Ticket ID (e.g., 'IR1959493').")
     ticket_type: str = Field(description="Ticket type: 'incident' or 'servicerequest'.")
     title: str | None = Field(default=None, description="Ticket title/summary.")
-    description: str | None = Field(default=None, description="Ticket description.")
+    description: str | None = Field(default=None, description="Ticket description (full, no truncation).")
     status: str | None = Field(default=None, description="Current status.")
     priority: str | int | None = Field(default=None, description="Current priority.")
     support_group: str | None = Field(default=None, description="Currently assigned support group.")
     affected_user: str | None = Field(default=None, description="Affected user display name.")
     affected_user_title: str | None = Field(default=None, description="Affected user job title.")
+    affected_user_phone: str | None = Field(default=None, description="Affected user phone number.")
     location: str | None = Field(default=None, description="Physical location.")
+    floor: str | None = Field(default=None, description="Floor.")
+    room: str | None = Field(default=None, description="Room.")
     classification: str | None = Field(default=None, description="Classification/Area.")
-    source: str | None = Field(default=None, description="Ticket source.")
+    source: str | None = Field(default=None, description="Ticket source (e.g., Web Portal, Phone).")
+    created_by: str | None = Field(default=None, description="User who created the ticket.")
     created_date: str | None = Field(default=None, description="Creation timestamp.")
+    modified_date: str | None = Field(default=None, description="Last modified timestamp.")
 
 
 class AssignmentResponse(BaseModel):
