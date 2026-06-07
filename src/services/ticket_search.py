@@ -23,6 +23,7 @@ from src.models.search import (
     SimilarTicketResult,
     TicketSummary,
 )
+from src.services.assignment import LOCATION_GUID_TO_FULLNAME
 
 
 class TicketSearchService:
@@ -370,6 +371,66 @@ class TicketSearchService:
         return val
 
     @staticmethod
+    def _resolve_location(raw: dict[str, Any]) -> str | None:
+        """Resolve location to parent\\child format using GUID lookup.
+
+        Handles both response formats:
+        - View endpoint: ``location`` = GUID string, ``locationValue`` = leaf name
+        - Object endpoint: ``location`` = dict with ``id`` and ``name``
+
+        Resolution order:
+        1. GUID lookup in LOCATION_GUID_TO_FULLNAME → last two path segments
+        2. locationValue companion field (if it contains a backslash path)
+        3. locationValue as-is
+        4. Leaf name from dict
+        """
+        loc = raw.get("location")
+        location_guid: str | None = None
+        leaf_name: str | None = None
+
+        if isinstance(loc, dict):
+            location_guid = loc.get("id")
+            leaf_name = loc.get("name") or loc.get("displayName")
+        elif isinstance(loc, str):
+            if TicketSearchService._is_guid(loc):
+                location_guid = loc
+            elif "\\" in loc:
+                # Already a path — return last two segments
+                parts = loc.split("\\")
+                return "\\".join(parts[-2:]) if len(parts) >= 2 else loc
+            else:
+                leaf_name = loc
+
+        # Check locationValue companion field
+        location_value = raw.get("locationValue")
+        if isinstance(location_value, str) and location_value:
+            location_value_str = location_value
+        else:
+            location_value_str = None
+
+        # 1. GUID lookup
+        if location_guid and LOCATION_GUID_TO_FULLNAME:
+            resolved = LOCATION_GUID_TO_FULLNAME.get(location_guid)
+            if resolved:
+                parts = resolved.split("\\")
+                return "\\".join(parts[-2:]) if len(parts) >= 2 else resolved
+
+        # 2. locationValue with path
+        if location_value_str and "\\" in location_value_str:
+            parts = location_value_str.split("\\")
+            return "\\".join(parts[-2:]) if len(parts) >= 2 else location_value_str
+
+        # 3. locationValue as-is
+        if location_value_str:
+            return location_value_str
+
+        # 4. Leaf name fallback
+        if leaf_name:
+            return leaf_name
+
+        return None
+
+    @staticmethod
     def _map_ticket(raw: dict[str, Any]) -> TicketSummary:
         """Map a raw Athena ticket dict to a TicketSummary model.
 
@@ -398,8 +459,8 @@ class TicketSearchService:
         # Priority: IR uses numeric, SR view endpoint has GUID + priorityValue companion
         priority = TicketSearchService._extract_field(raw, "priority")
 
-        # Location: view endpoint has locationValue, object endpoint has dict
-        location = TicketSearchService._extract_field(raw, "location")
+        # Location: resolve GUID to parent\child path using lookup table
+        location = TicketSearchService._resolve_location(raw)
 
         # Description: truncate if too long
         description = raw.get("description") or None

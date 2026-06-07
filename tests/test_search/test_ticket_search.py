@@ -387,7 +387,7 @@ def test_map_ticket_view_endpoint_format():
     assert result.affected_user == "Massey, Chuck"
     assert result.priority == 2
     assert result.created_date == "19:57 04/13/2026"
-    assert result.location == "Downtown Outpatient Pavilion (DOP)"
+    assert result.location == "LGH\\Downtown Outpatient Pavilion (DOP)"
 
 
 def test_map_ticket_guid_status_without_value_field():
@@ -657,10 +657,26 @@ def test_map_ticket_location_string():
 
 
 def test_map_ticket_location_guid_rejected():
-    """_map_ticket should return None for GUID location."""
-    raw = {"id": "IR1000012", "location": "d5469f7c-d8b1-ff41-255a-9956ea42d843"}
+    """_map_ticket should return None for GUID location not in lookup table."""
+    raw = {"id": "IR1000012", "location": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
     result = TicketSearchService._map_ticket(raw)
     assert result.location is None
+
+
+def test_map_ticket_location_guid_resolves_via_lookup():
+    """_map_ticket should resolve a known GUID to parent\\child via lookup table."""
+    # GUID d5469f7c-d8b1-ff41-255a-9956ea42d843 = "HUP" (top-level, single segment)
+    raw = {"id": "IR1000015", "location": "d5469f7c-d8b1-ff41-255a-9956ea42d843"}
+    result = TicketSearchService._map_ticket(raw)
+    assert result.location == "HUP"
+
+
+def test_map_ticket_location_guid_resolves_child():
+    """_map_ticket should resolve a child GUID to parent\\child format."""
+    # GUID adb50fb4-5e17-c8f6-586b-cf47f08868f1 = "HUP\RAVDIN"
+    raw = {"id": "IR1000016", "location": "adb50fb4-5e17-c8f6-586b-cf47f08868f1"}
+    result = TicketSearchService._map_ticket(raw)
+    assert result.location == "HUP\\RAVDIN"
 
 
 def test_map_ticket_location_missing():
@@ -671,11 +687,12 @@ def test_map_ticket_location_missing():
 
 
 def test_map_ticket_location_view_endpoint_format():
-    """_map_ticket should use locationValue from the view endpoint flat format."""
+    """_map_ticket should resolve GUID to parent\\child even when locationValue is present."""
     raw = {
         "id": "IR1000014",
         "location": "570b9d6a-8680-0e6c-216f-0da4bb04d89b",
         "locationValue": "Downtown Outpatient Pavilion (DOP)",
     }
     result = TicketSearchService._map_ticket(raw)
-    assert result.location == "Downtown Outpatient Pavilion (DOP)"
+    # GUID lookup resolves to full path; locationValue is fallback only if GUID not found
+    assert result.location == "LGH\\Downtown Outpatient Pavilion (DOP)"

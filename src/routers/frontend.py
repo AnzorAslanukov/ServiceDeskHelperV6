@@ -382,11 +382,20 @@ def _extract_location_path(raw_ticket: dict[str, Any]) -> str | None:
     if location_value and isinstance(location_value, str):
         location_value_str = location_value
 
+    # Debug logging for location resolution
+    logger.debug(
+        "Location extraction: loc=%r, guid=%s, leaf=%s, lookup_size=%d",
+        loc, location_guid, leaf_from_dict, len(LOCATION_GUID_TO_FULLNAME),
+    )
+
     # Resolve GUID to full path using the location lookup table
     if location_guid and LOCATION_GUID_TO_FULLNAME:
         resolved_path = LOCATION_GUID_TO_FULLNAME.get(location_guid)
         if resolved_path:
+            logger.debug("Location GUID %s resolved to: %s", location_guid, resolved_path)
             return _last_two_segments(resolved_path)
+        else:
+            logger.debug("Location GUID %s NOT FOUND in lookup table", location_guid)
 
     # Fallback: use explicit path fields if available
     if full_path_from_dict and "\\" in full_path_from_dict:
