@@ -195,8 +195,7 @@ async def bulk_ui_page(request: Request):
     bulk_user_id = user.display_name if user else "Unknown"
 
     return templates.TemplateResponse(
-        "bulk/index.html",
-        {"request": request, "active_page": "bulk", "bulk_user_id": bulk_user_id},
+        request, "bulk/index.html", {"active_page": "bulk", "bulk_user_id": bulk_user_id},
     )
 
 
