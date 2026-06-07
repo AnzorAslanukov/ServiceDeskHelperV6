@@ -23,10 +23,12 @@
             <tr>
                 <th></th>
                 <th data-sortable data-sort-dir="none" onclick="sortTable(this, 1, 'natural')">Ticket ID <span class="sort-indicator">⇅</span></th>
-                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 2, 'number')">Similarity <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 2, 'text')">Title <span class="sort-indicator">⇅</span></th>
+                <th data-sortable data-sort-dir="none" onclick="sortTable(this, 3, 'number')">Similarity <span class="sort-indicator">⇅</span></th>
             </tr>
             <tr class="filter-row">
                 <td></td>
+                <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
                 <td><input type="text" placeholder="Filter…" oninput="filterTable(this)"></td>
                 <td></td>
             </tr>
@@ -36,6 +38,7 @@
             <tr>
                 <td><button class="ticket-expand-btn" onclick="toggleTicketDetailsHtmx(this, '{{ ticket.id }}')" title="Expand details">▶</button></td>
                 <td data-sort-value="{{ ticket.id }}"><span class="ticket-id-group"><span class="ticket-id">{{ ticket.id }}</span><button class="copy-btn" onclick="copyTicketId(this, '{{ ticket.id }}')" title="Copy ticket ID">📋</button></span></td>
+                <td data-sort-value="{{ ticket.title or '' }}"><span class="ticket-title-cell">{{ ticket.title or '—' }}</span></td>
                 <td data-sort-value="{{ ticket.similarity }}">
                     <div class="similarity-score">
                         <div class="similarity-bar">
@@ -46,7 +49,7 @@
                 </td>
             </tr>
             <tr class="ticket-detail-row" style="display: none;">
-                <td colspan="3">
+                <td colspan="4">
                     <div class="ticket-detail-loading">Loading details…</div>
                 </td>
             </tr>

@@ -152,6 +152,9 @@ class TicketSearchService:
             for r in ticket_results
         ]
 
+        # Fetch titles for the similar tickets in parallel
+        similar_tickets = await self._enrich_similar_tickets_with_titles(similar_tickets)
+
         documentation = [
             DocumentationResult(
                 content=r["content"],
@@ -231,12 +234,44 @@ class TicketSearchService:
             if r["id"] != ticket_id
         ][:top_k]
 
+        # Fetch titles for the similar tickets in parallel
+        similar_tickets = await self._enrich_similar_tickets_with_titles(similar_tickets)
+
         return SimilarTicketResponse(
             source_ticket_id=ticket_id,
             similar_tickets=similar_tickets,
         )
 
     # ── Helpers ───────────────────────────────────────────────────────
+
+    async def _enrich_similar_tickets_with_titles(
+        self, tickets: list[SimilarTicketResult]
+    ) -> list[SimilarTicketResult]:
+        """Fetch titles from Athena for a list of similar ticket results.
+
+        Fetches tickets in parallel and populates the title field.
+        If a fetch fails for a ticket, its title remains None.
+        """
+        if not tickets:
+            return tickets
+
+        async def _fetch_title(ticket_id: str) -> str | None:
+            try:
+                raw = await self._athena.get_ticket(ticket_id)
+                if raw:
+                    return raw.get("title")
+            except Exception:
+                pass
+            return None
+
+        titles = await asyncio.gather(
+            *[_fetch_title(t.id) for t in tickets]
+        )
+
+        return [
+            SimilarTicketResult(id=t.id, title=title, similarity=t.similarity)
+            for t, title in zip(tickets, titles)
+        ]
 
     @staticmethod
     def _extract_name(value: Any) -> str | None:

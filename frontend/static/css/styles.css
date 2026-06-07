@@ -2432,6 +2432,16 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
 }
 
 /* Title display */
+.ticket-title-cell {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 0.82rem;
+    color: var(--text-primary, #1a1a2e);
+    max-width: 350px;
+}
+
 .ticket-title-text {
     font-size: 0.92rem;
     font-weight: 500;

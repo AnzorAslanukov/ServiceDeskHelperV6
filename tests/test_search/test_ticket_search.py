@@ -225,7 +225,11 @@ async def test_find_similar_tickets_returns_results(
 
     assert result.source_ticket_id == "IR1959493"
     assert len(result.similar_tickets) == 5
-    mock_athena_client.get_ticket.assert_called_once_with("IR1959493")
+    # get_ticket is called once for the source ticket + N times for title enrichment
+    assert mock_athena_client.get_ticket.call_count == 6  # 1 source + 5 similar
+    mock_athena_client.get_ticket.assert_any_call("IR1959493")
+    # Verify titles were populated from the mock return value
+    assert all(t.title == "Printer not working on 3rd floor" for t in result.similar_tickets)
     mock_databricks_client.generate_embedding.assert_called_once_with(
         "Printer not working on 3rd floor HP LaserJet on 3rd floor Ravdin is not printing."
     )
@@ -251,7 +255,9 @@ async def test_find_similar_tickets_sr_ticket(
 
     assert result.source_ticket_id == "SR10393291"
     assert len(result.similar_tickets) == 5
-    mock_athena_client.get_ticket.assert_called_once_with("SR10393291")
+    # get_ticket is called once for the source ticket + N times for title enrichment
+    assert mock_athena_client.get_ticket.call_count == 6  # 1 source + 5 similar
+    mock_athena_client.get_ticket.assert_any_call("SR10393291")
     mock_databricks_client.generate_embedding.assert_called_once_with(
         "New laptop request User needs a new laptop for remote work."
     )

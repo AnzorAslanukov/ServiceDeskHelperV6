@@ -10,14 +10,16 @@ avoiding an extra HTTP hop through the API endpoints.
 """
 
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from src.dependencies import get_assignment_service, get_athena_client, get_chatbot_service, get_search_service
-from src.services.assignment import AssignmentService
+from src.services.assignment import AssignmentService, LOCATION_GUID_TO_FULLNAME
 from src.services.chatbot import ChatbotService
 from src.services.ticket_search import TicketSearchService
 
@@ -190,14 +192,14 @@ async def ticket_detail_partial(
     ticket_id: str,
     athena=Depends(get_athena_client),
 ):
-    """HTMX partial: Fetch a single ticket from Athena and return detail HTML."""
+    """HTMX partial: Fetch a single ticket from Athena and return rich detail HTML."""
     try:
         raw = await athena.get_ticket(ticket_id)
-        ticket = TicketSearchService._map_ticket(raw)
+        ticket = _extract_rich_ticket_detail(raw, ticket_id)
         return templates.TemplateResponse(
             request,
             "search/partials/ticket_detail.html",
-            {"ticket": ticket.model_dump()},
+            {"ticket": ticket},
         )
     except Exception as e:
         logger.exception("Ticket detail fetch failed for %s", ticket_id)
@@ -295,3 +297,185 @@ async def search_similar_partial(
                 "similar_tickets": [],
             },
         )
+
+
+# ── Helper Functions ───────────────────────────────────────────────────
+
+
+def _is_guid(value: str) -> bool:
+    """Check if a string looks like a GUID."""
+    return bool(re.match(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        value,
+    ))
+
+
+def _get_field(data: dict[str, Any], *keys: str) -> Any:
+    """Get the first non-None value from a dict for the given keys.
+
+    If the value is a dict, extracts name/displayName.
+    If the value is a GUID string, returns None.
+    """
+    for key in keys:
+        # Check *Value companion field first (view endpoint flat format)
+        companion = data.get(f"{key}Value")
+        if companion is not None:
+            return companion
+        val = data.get(key)
+        if val is not None:
+            if isinstance(val, dict):
+                return val.get("name") or val.get("displayName")
+            if isinstance(val, str) and _is_guid(val):
+                continue
+            return val
+    return None
+
+
+def _format_datetime(raw: str | None) -> str | None:
+    """Format an Athena ISO date string to HH:MM MM/DD/YYYY."""
+    if not raw:
+        return None
+    from datetime import datetime
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+    ):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.strftime("%H:%M %m/%d/%Y")
+        except ValueError:
+            continue
+    return raw
+
+
+def _extract_location_path(raw_ticket: dict[str, Any]) -> str | None:
+    """Extract location as parent\\child (e.g., 'HUP\\RAVDIN') using GUID lookup."""
+
+    def _last_two_segments(path: str) -> str:
+        parts = path.split("\\")
+        if len(parts) >= 2:
+            return "\\".join(parts[-2:])
+        return path
+
+    loc = raw_ticket.get("location")
+    location_guid: str | None = None
+    full_path_from_dict: str | None = None
+    leaf_from_dict: str | None = None
+
+    if isinstance(loc, dict):
+        location_guid = loc.get("id")
+        full_path_from_dict = loc.get("path") or loc.get("fullName") or loc.get("fullname")
+        leaf_from_dict = loc.get("name") or loc.get("displayName")
+    elif isinstance(loc, str):
+        if _is_guid(loc):
+            location_guid = loc
+        elif "\\" in loc:
+            full_path_from_dict = loc
+        else:
+            leaf_from_dict = loc
+
+    # Check locationValue companion field (view endpoint format)
+    location_value = raw_ticket.get("locationValue")
+    location_value_str: str | None = None
+    if location_value and isinstance(location_value, str):
+        location_value_str = location_value
+
+    # Resolve GUID to full path using the location lookup table
+    if location_guid and LOCATION_GUID_TO_FULLNAME:
+        resolved_path = LOCATION_GUID_TO_FULLNAME.get(location_guid)
+        if resolved_path:
+            return _last_two_segments(resolved_path)
+
+    # Fallback: use explicit path fields if available
+    if full_path_from_dict and "\\" in full_path_from_dict:
+        return _last_two_segments(full_path_from_dict)
+
+    if location_value_str and "\\" in location_value_str:
+        return _last_two_segments(location_value_str)
+
+    if full_path_from_dict:
+        return _last_two_segments(full_path_from_dict)
+
+    if location_value_str:
+        return location_value_str
+
+    if leaf_from_dict:
+        return leaf_from_dict
+
+    return None
+
+
+def _extract_rich_ticket_detail(raw_ticket: dict[str, Any], ticket_id: str) -> dict[str, Any]:
+    """Extract rich ticket detail from raw Athena response for the detail partial.
+
+    Returns a dict with all fields needed by the ticket_detail.html template,
+    matching the same structure as Feature #3's TicketInfo.
+    """
+    # Determine ticket type from ID prefix
+    ticket_type = "incident" if ticket_id.upper().startswith("IR") else "servicerequest"
+
+    # Extract affected user details
+    affected_user_obj = raw_ticket.get("affectedUser")
+    affected_user = None
+    affected_user_title = None
+    affected_user_phone = None
+    if isinstance(affected_user_obj, dict):
+        affected_user = affected_user_obj.get("displayName") or affected_user_obj.get("userName")
+        affected_user_title = affected_user_obj.get("title")
+        affected_user_phone = affected_user_obj.get("businessPhone") or affected_user_obj.get("mobile")
+    elif isinstance(affected_user_obj, str) and not _is_guid(affected_user_obj):
+        affected_user = affected_user_obj
+
+    # Fallback for flat format (view endpoint)
+    if not affected_user:
+        affected_user = raw_ticket.get("affectedUser_DisplayName")
+    if not affected_user_title:
+        affected_user_title = raw_ticket.get("affectedUserTitle")
+
+    # Extract created by
+    created_by_obj = raw_ticket.get("createdBy")
+    created_by = None
+    if isinstance(created_by_obj, dict):
+        created_by = created_by_obj.get("displayName") or created_by_obj.get("userName")
+    elif isinstance(created_by_obj, str) and not _is_guid(created_by_obj):
+        created_by = created_by_obj
+
+    # Extract location with full path (parent\child format)
+    location = _extract_location_path(raw_ticket)
+
+    # Status
+    status = _get_field(raw_ticket, "status")
+
+    # Support group
+    support_group = _get_field(raw_ticket, "supportGroup", "tierQueue", "assignedGroup")
+
+    # Determine if ticket is resolved/closed for labeling
+    is_resolved_or_closed = False
+    if status and isinstance(status, str):
+        is_resolved_or_closed = any(
+            s in status.lower() for s in ("resolved", "closed", "completed")
+        )
+
+    return {
+        "id": ticket_id,
+        "ticket_type": ticket_type,
+        "title": _get_field(raw_ticket, "title", "shortDescription", "summary"),
+        "description": raw_ticket.get("description"),
+        "status": status,
+        "priority": _get_field(raw_ticket, "priority"),
+        "support_group": support_group,
+        "is_resolved_or_closed": is_resolved_or_closed,
+        "affected_user": affected_user,
+        "affected_user_title": affected_user_title,
+        "affected_user_phone": affected_user_phone,
+        "location": location,
+        "floor": _get_field(raw_ticket, "floor"),
+        "room": raw_ticket.get("room"),
+        "classification": _get_field(raw_ticket, "classificationPath", "classification"),
+        "source": _get_field(raw_ticket, "source"),
+        "created_by": created_by,
+        "created_date": _format_datetime(_get_field(raw_ticket, "createdDate", "createDate")),
+        "modified_date": _format_datetime(_get_field(raw_ticket, "lastModifiedDate", "lastModified")),
+    }

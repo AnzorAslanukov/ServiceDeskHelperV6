@@ -117,6 +117,7 @@ class TicketSummary(BaseModel):
 class SimilarTicketResult(BaseModel):
     """A ticket match from semantic or similarity search with a similarity score."""
     id: str = Field(description="Ticket ID.")
+    title: str | None = Field(default=None, description="Ticket title/summary.")
     similarity: float = Field(description="Cosine similarity score (0.0 to 1.0).")
 
 
