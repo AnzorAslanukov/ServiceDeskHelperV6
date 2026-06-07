@@ -3,69 +3,6 @@
    Uses CSS variables from the global styles.css for theme support
    ══════════════════════════════════════════════════════════════════════ */
 
-/* ── Login Overlay ─────────────────────────────────────────────────── */
-
-.bulk-login-overlay {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 60vh;
-}
-
-.bulk-login-card {
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius);
-    box-shadow: var(--shadow-md);
-    padding: 2.5rem;
-    max-width: 400px;
-    width: 100%;
-    text-align: center;
-}
-
-.bulk-login-card h2 {
-    margin: 0 0 0.5rem 0;
-    color: var(--text-primary);
-    font-size: 1.5rem;
-}
-
-.bulk-login-card p {
-    margin: 0 0 1.5rem 0;
-    color: var(--text-secondary);
-    font-size: 0.9rem;
-}
-
-.bulk-login-card .form-group {
-    margin-bottom: 1.25rem;
-    text-align: left;
-}
-
-.bulk-login-card .form-label {
-    display: block;
-    margin-bottom: 0.35rem;
-    font-weight: 600;
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-}
-
-.bulk-login-card .form-input {
-    width: 100%;
-    padding: 0.6rem 0.75rem;
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius-sm);
-    background: var(--bg-input);
-    color: var(--text-primary);
-    font-size: 0.95rem;
-    box-sizing: border-box;
-    transition: border-color var(--transition-speed);
-}
-
-.bulk-login-card .form-input:focus {
-    outline: none;
-    border-color: var(--border-focus);
-    box-shadow: 0 0 0 3px rgba(74, 144, 217, 0.15);
-}
-
 /* ── Toolbar ───────────────────────────────────────────────────────── */
 
 .bulk-toolbar {
@@ -251,10 +188,43 @@
 }
 
 .bulk-table tbody td {
-    padding: 0.55rem 0.75rem;
+    padding: 0.6rem 0.75rem;
     border-bottom: 1px solid var(--border-color-light);
     color: var(--text-primary);
     vertical-align: top;
+}
+
+/* ── Ticket Group Visual Boundaries ───────────────────────────────── */
+/* Each ticket "group" = main row + detail row + rec row.
+   A thicker top border on main rows separates groups visually.
+   Zebra striping uses even/odd classes added by JS. */
+
+.bulk-table tbody tr[data-ticket-id] {
+    border-top: 2px solid var(--border-color);
+}
+
+.bulk-table tbody tr[data-ticket-id]:first-child {
+    border-top: none;
+}
+
+/* Zebra striping — JS adds .bulk-row-even / .bulk-row-odd */
+.bulk-table tbody tr.bulk-row-even {
+    background: var(--bg-card, #ffffff);
+}
+
+.bulk-table tbody tr.bulk-row-odd {
+    background: var(--bg-tertiary, #f4f6f8);
+}
+
+/* Carry zebra stripe into child rows (detail + rec) */
+.bulk-table tbody tr.bulk-row-even + .bulk-detail-row,
+.bulk-table tbody tr.bulk-row-even + .bulk-detail-row + .bulk-rec-row {
+    background: var(--bg-card, #ffffff) !important;
+}
+
+.bulk-table tbody tr.bulk-row-odd + .bulk-detail-row,
+.bulk-table tbody tr.bulk-row-odd + .bulk-detail-row + .bulk-rec-row {
+    background: var(--bg-tertiary, #f4f6f8) !important;
 }
 
 .bulk-table tbody tr:hover {
@@ -1118,4 +1088,163 @@
     cursor: pointer;
     width: 15px;
     height: 15px;
+}
+
+/* ── Recommendation Confidence & Alternatives ─────────────────────── */
+
+/* Top recommendation section */
+.bulk-rec-top {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0;
+}
+
+.bulk-rec-top-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.bulk-rec-label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+/* Method badge (classifier / triage_rule) */
+.bulk-rec-method-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.bulk-rec-method-badge.classifier {
+    background: rgba(52, 152, 219, 0.15);
+    color: #2980b9;
+    border: 1px solid rgba(52, 152, 219, 0.3);
+}
+
+.bulk-rec-method-badge.triage_rule {
+    background: rgba(46, 204, 113, 0.15);
+    color: #27ae60;
+    border: 1px solid rgba(46, 204, 113, 0.3);
+}
+
+/* Confidence bar */
+.bulk-rec-confidence {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 160px;
+}
+
+.bulk-rec-conf-bar-container {
+    flex: 1;
+    height: 8px;
+    background: var(--bg-tertiary, #e9ecef);
+    border-radius: 4px;
+    overflow: hidden;
+    min-width: 80px;
+}
+
+.bulk-rec-conf-bar-container.small {
+    height: 6px;
+    min-width: 60px;
+}
+
+.bulk-rec-conf-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #3498db, #2ecc71);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.bulk-rec-conf-text {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 35px;
+    text-align: right;
+}
+
+/* Alternatives table */
+.bulk-rec-alternatives {
+    margin: 0.5rem 0 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    overflow: hidden;
+}
+
+.bulk-rec-alt-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+
+.bulk-rec-alt-table thead th {
+    background: var(--bg-secondary);
+    padding: 0.4rem 0.75rem;
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.bulk-rec-alt-table tbody td {
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: middle;
+}
+
+.bulk-rec-alt-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.bulk-rec-alt-row {
+    cursor: default;
+    transition: background 0.15s;
+}
+
+.bulk-rec-alt-row:hover {
+    background: rgba(52, 152, 219, 0.08);
+}
+
+.bulk-rec-alt-row td:last-child {
+    text-align: center;
+    white-space: nowrap;
+}
+
+/* "Use ↗" button in alternatives table */
+.btn-alt-select {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--penn-accent, #4A90D9);
+    background: transparent;
+    border: 1px solid var(--penn-accent, #4A90D9);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.btn-alt-select:hover {
+    background: var(--penn-accent, #4A90D9);
+    color: #fff;
+}
+
+.btn-alt-select:active {
+    transform: scale(0.95);
 }

@@ -43,8 +43,12 @@ class Settings(BaseSettings):
         default="IS SD Team,Athena Users", alias="ALLOWED_AD_GROUPS"
     )
     allowed_usernames: str = Field(default="aslanuka", alias="ALLOWED_USERNAMES")
-    session_secret_key: str = Field(alias="SESSION_SECRET_KEY")
+    session_secret_key: str = Field(
+        default="dev-insecure-secret-change-in-production",
+        alias="SESSION_SECRET_KEY",
+    )
     session_expire_hours: float = Field(default=12.0, alias="SESSION_EXPIRE_HOURS")
+    enable_test_accounts: bool = Field(default=False, alias="ENABLE_TEST_ACCOUNTS")
 
     model_config = {
         "env_file": ".env",

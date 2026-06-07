@@ -48,7 +48,7 @@ class QueueTicketSummary(BaseModel):
     entity_id: str = Field(description="Athena entityId GUID (required for PUT updates).")
     ticket_type: str = Field(description="'incident' or 'servicerequest'.")
     title: str | None = Field(default=None, description="Ticket title/summary.")
-    description: str | None = Field(default=None, description="Ticket description (truncated).")
+    description: str | None = Field(default=None, description="Ticket description (full, no truncation).")
     status: str | None = Field(default=None, description="Current status.")
     priority: str | int | None = Field(default=None, description="Current priority.")
     tier_queue: str | None = Field(default=None, description="Current tier queue name.")

@@ -16,6 +16,7 @@ If the JSON file is unavailable, a minimal fallback set is used.
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,14 @@ _SUPPORT_GROUPS_JSON = (
     / "exploration"
     / "output"
     / "assignable_support_groups.json"
+)
+
+# Path to the locations JSON file (for GUID → fullname lookup)
+_LOCATIONS_JSON = (
+    Path(__file__).resolve().parent.parent.parent
+    / "exploration"
+    / "output"
+    / "locations.json"
 )
 
 # Minimal fallback if JSON file is unavailable — only the most essential groups
@@ -116,8 +125,57 @@ def load_support_groups(
         )
 
 
+def load_location_lookup(
+    json_path: Path | None = None,
+) -> dict[str, str]:
+    """
+    Load location GUID → fullname mapping from the locations JSON tree.
+
+    The locations.json file contains the hierarchical location enum tree.
+    Each node has 'value' (GUID), 'label' (leaf name), 'fullname' (full path),
+    and 'children' (sub-locations).
+
+    Returns:
+        Dict mapping location GUID → fullname (e.g., 'HUP\\RHOADS').
+    """
+    path = json_path or _LOCATIONS_JSON
+
+    def _flatten_tree(nodes: list[dict], result: dict[str, str]) -> None:
+        """Recursively flatten the tree into guid → fullname mapping."""
+        for node in nodes:
+            guid = node.get("value", "")
+            fullname = node.get("fullname", "")
+            if guid and fullname:
+                result[guid] = fullname
+            children = node.get("children", [])
+            if children:
+                _flatten_tree(children, result)
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        lookup: dict[str, str] = {}
+        _flatten_tree(data, lookup)
+
+        if lookup:
+            logger.info("Loaded %d location GUID mappings from %s", len(lookup), path)
+        else:
+            logger.warning("Location JSON at %s produced empty lookup.", path)
+
+        return lookup
+
+    except FileNotFoundError:
+        logger.warning("Locations JSON not found at %s. Location paths will show leaf only.", path)
+        return {}
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        logger.warning("Failed to parse locations JSON at %s: %s.", path, exc)
+        return {}
+
+
 # Load at module import time
 IR_SUPPORT_GROUPS, SR_SUPPORT_GROUPS = load_support_groups()
+LOCATION_GUID_TO_FULLNAME: dict[str, str] = load_location_lookup()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -577,6 +635,26 @@ class AssignmentService:
         return normalized
 
     @staticmethod
+    def _format_datetime(iso_str: str | None) -> str | None:
+        """
+        Format an ISO 8601 datetime string to 'MM/DD/YYYY HH:MM AM/PM'.
+
+        Examples:
+            '2026-06-01T12:15:59.383-04:00' → '06/01/2026 12:15 PM'
+            '2026-01-15T09:05:00.000-05:00' → '01/15/2026 09:05 AM'
+
+        Returns None if input is None or unparseable.
+        """
+        if not iso_str or not isinstance(iso_str, str):
+            return None
+        try:
+            # Python 3.11+ handles the timezone offset directly
+            dt = datetime.fromisoformat(iso_str)
+            return dt.strftime("%m/%d/%Y %I:%M %p")
+        except (ValueError, TypeError):
+            return iso_str  # Return raw string if parsing fails
+
+    @staticmethod
     def _get_ticket_type(ticket_id: str) -> str:
         """Determine ticket type from the ID prefix."""
         if ticket_id.startswith("IR"):
@@ -655,48 +733,79 @@ class AssignmentService:
             classification=get_field(raw_ticket, "classificationPath", "classification"),
             source=get_field(raw_ticket, "source"),
             created_by=created_by,
-            created_date=get_field(raw_ticket, "createdDate", "createDate"),
-            modified_date=get_field(raw_ticket, "lastModifiedDate", "lastModified"),
+            created_date=self._format_datetime(get_field(raw_ticket, "createdDate", "createDate")),
+            modified_date=self._format_datetime(get_field(raw_ticket, "lastModifiedDate", "lastModified")),
         )
 
     @staticmethod
     def _extract_location_path(raw_ticket: dict[str, Any]) -> str | None:
         """
-        Extract the full location path (e.g., 'PPMC\\OTHER') from the ticket.
+        Extract the location as parent\\child (e.g., 'HUP\\RAVDIN') from the ticket.
 
-        The Athena API returns location in different formats:
-        - View endpoint: 'locationValue' companion field (may be leaf or full path)
-        - Object endpoint: 'location' as dict with 'path', 'fullName', 'name', etc.
+        The Athena API returns location as {"id": "GUID", "name": "RHOADS"} — only
+        the leaf name. We use the LOCATION_GUID_TO_FULLNAME lookup (loaded from
+        exploration/output/locations.json) to resolve the GUID to the full path
+        (e.g., 'HUP\\RHOADS'), then show the last two segments.
 
-        Priority order for full path:
-        1. locationValue (view endpoint companion field — often has full path)
-        2. location dict → path / fullName (hierarchical path)
-        3. location dict → name / displayName (leaf name fallback)
-        4. location as plain string
+        If the full path has more than 2 levels (e.g., 'PPMC\\PAC\\TSICU'),
+        we show only the last two segments: 'PAC\\TSICU'.
         """
-        # 1. Check locationValue companion (view endpoint format)
-        location_value = raw_ticket.get("locationValue")
-        if location_value and isinstance(location_value, str):
-            return location_value
+        import re
 
-        # 2. Check location field
+        def _last_two_segments(path: str) -> str:
+            """Return parent\\child from a potentially deeper path."""
+            parts = path.split("\\")
+            if len(parts) >= 2:
+                return "\\".join(parts[-2:])
+            return path
+
+        # 1. Try location dict (standard API response: {"id": "GUID", "name": "leaf"})
         loc = raw_ticket.get("location")
-        if loc is None:
-            return None
+        location_guid: str | None = None
+        full_path_from_dict: str | None = None
+        leaf_from_dict: str | None = None
 
         if isinstance(loc, dict):
-            # Prefer full path fields
-            full_path = loc.get("path") or loc.get("fullName") or loc.get("fullname")
-            if full_path:
-                return full_path
-            # Fall back to name/displayName (leaf only)
-            return loc.get("name") or loc.get("displayName")
-
-        if isinstance(loc, str):
-            # Check if it's a GUID (skip it)
-            import re
+            location_guid = loc.get("id")
+            full_path_from_dict = loc.get("path") or loc.get("fullName") or loc.get("fullname")
+            leaf_from_dict = loc.get("name") or loc.get("displayName")
+        elif isinstance(loc, str):
             if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', loc, re.IGNORECASE):
-                return None
-            return loc
+                location_guid = loc
+            elif "\\" in loc:
+                full_path_from_dict = loc
+            else:
+                leaf_from_dict = loc
+
+        # 2. Check locationValue companion field (view endpoint format)
+        location_value = raw_ticket.get("locationValue")
+        location_value_str: str | None = None
+        if location_value and isinstance(location_value, str):
+            location_value_str = location_value
+
+        # 3. Resolve GUID to full path using the location lookup table
+        if location_guid and LOCATION_GUID_TO_FULLNAME:
+            resolved_path = LOCATION_GUID_TO_FULLNAME.get(location_guid)
+            if resolved_path:
+                return _last_two_segments(resolved_path)
+
+        # 4. Fallback: use explicit path fields if available
+        if full_path_from_dict and "\\" in full_path_from_dict:
+            return _last_two_segments(full_path_from_dict)
+
+        # If locationValue has a backslash, it already has parent\child
+        if location_value_str and "\\" in location_value_str:
+            return _last_two_segments(location_value_str)
+
+        if full_path_from_dict:
+            return _last_two_segments(full_path_from_dict)
+
+        # If locationValue exists (leaf only, no GUID resolution available)
+        if location_value_str:
+            return location_value_str
+
+        # Fall back to leaf from dict
+        if leaf_from_dict:
+            return leaf_from_dict
 
         return None

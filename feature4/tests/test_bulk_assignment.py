@@ -631,8 +631,8 @@ def test_raw_to_queue_summary_missing_entity_id():
     assert summary is None
 
 
-def test_raw_to_queue_summary_truncates_description():
-    """Should truncate long descriptions to 200 chars."""
+def test_raw_to_queue_summary_preserves_full_description():
+    """Should preserve the full description without truncation."""
     raw = {
         "id": "IR10001",
         "entityId": "eid-1",
@@ -640,8 +640,8 @@ def test_raw_to_queue_summary_truncates_description():
     }
     summary = BulkAssignmentService._raw_to_queue_summary(raw, "incident")
     assert summary is not None
-    assert len(summary.description) == 203  # 200 + "..."
-    assert summary.description.endswith("...")
+    assert len(summary.description) == 300  # Full description preserved
+    assert summary.description == "A" * 300
 
 
 def test_raw_to_queue_summary_string_status():
@@ -1415,3 +1415,183 @@ async def test_compute_queue_diff_after_snapshot(
     assert diff["added"][0].id == "IR10002"
     assert len(diff["removed"]) == 1
     assert "SR20001" in diff["removed"]
+
+
+# ── Queue Cache Tests ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_refresh_cache_populates_cached_queue(
+    bulk_assignment_service, mock_athena_client
+):
+    """refresh_cache() should populate _cached_queue and _last_known_ticket_ids."""
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {
+        "results": SAMPLE_SR_TICKETS[:1]
+    }
+
+    assert bulk_assignment_service.cached_queue is None
+
+    count = await bulk_assignment_service.refresh_cache()
+
+    assert count == 3
+    assert bulk_assignment_service.cached_queue is not None
+    assert len(bulk_assignment_service.cached_queue) == 3
+    assert bulk_assignment_service._last_known_ticket_ids == {"IR10001", "IR10002", "SR20001"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_queue_streaming_serves_from_cache(
+    bulk_assignment_service, mock_athena_client
+):
+    """fetch_queue_streaming() should serve from cache without calling Athena."""
+    # First, populate the cache
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:1]
+    }
+    mock_athena_client.search_service_requests.return_value = {
+        "results": SAMPLE_SR_TICKETS[:1]
+    }
+    await bulk_assignment_service.refresh_cache()
+
+    # Reset mock call counts
+    mock_athena_client.search_incidents.reset_mock()
+    mock_athena_client.search_service_requests.reset_mock()
+
+    # Now stream from cache
+    streamed = []
+
+    async def on_ticket(ticket, count):
+        streamed.append(ticket)
+
+    phases = []
+
+    async def on_phase(phase):
+        phases.append(phase)
+
+    total = await bulk_assignment_service.fetch_queue_streaming(
+        on_ticket=on_ticket, on_phase=on_phase
+    )
+
+    assert total == 2
+    assert len(streamed) == 2
+    # Should NOT have called Athena
+    mock_athena_client.search_incidents.assert_not_called()
+    mock_athena_client.search_service_requests.assert_not_called()
+    # Should have used the cache path
+    assert "serving_from_cache" in phases
+    assert "complete" in phases
+
+
+@pytest.mark.asyncio
+async def test_fetch_queue_streaming_falls_back_to_athena_without_cache(
+    bulk_assignment_service, mock_athena_client
+):
+    """fetch_queue_streaming() should call Athena when cache is None."""
+    assert bulk_assignment_service.cached_queue is None
+
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:1]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+
+    streamed = []
+
+    async def on_ticket(ticket, count):
+        streamed.append(ticket)
+
+    phases = []
+
+    async def on_phase(phase):
+        phases.append(phase)
+
+    total = await bulk_assignment_service.fetch_queue_streaming(
+        on_ticket=on_ticket, on_phase=on_phase
+    )
+
+    assert total == 1
+    # Should have called Athena (slow path)
+    mock_athena_client.search_incidents.assert_called_once()
+    # Should NOT have used the cache path
+    assert "serving_from_cache" not in phases
+    assert "fetching" in phases
+
+
+@pytest.mark.asyncio
+async def test_compute_queue_diff_updates_cache(
+    bulk_assignment_service, mock_athena_client
+):
+    """compute_queue_diff() should update _cached_queue as a side effect."""
+    # Start with no cache
+    assert bulk_assignment_service.cached_queue is None
+
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {
+        "results": SAMPLE_SR_TICKETS[:1]
+    }
+
+    await bulk_assignment_service.compute_queue_diff()
+
+    # Cache should now be populated
+    assert bulk_assignment_service.cached_queue is not None
+    assert len(bulk_assignment_service.cached_queue) == 3
+
+
+@pytest.mark.asyncio
+async def test_refresh_cache_filters_closed_tickets(
+    bulk_assignment_service, mock_athena_client
+):
+    """refresh_cache() should only cache open tickets (closed filtered out)."""
+    # Include a closed ticket in the results
+    closed_ticket = {
+        "id": "IR99999",
+        "entityId": "eid-closed",
+        "title": "Closed ticket",
+        "status": {"name": "Closed", "id": IR_CLOSED_GUID},
+        "priority": 1,
+        "tierQueue": {"name": "Validation"},
+        "createdDate": "2026-04-14T08:00:00Z",
+    }
+    mock_athena_client.search_incidents.return_value = {
+        "results": [SAMPLE_IR_TICKETS[0], closed_ticket]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+
+    count = await bulk_assignment_service.refresh_cache()
+
+    # Only the open ticket should be cached
+    assert count == 1
+    assert len(bulk_assignment_service.cached_queue) == 1
+    assert bulk_assignment_service.cached_queue[0].id == "IR10001"
+
+
+@pytest.mark.asyncio
+async def test_cache_annotates_lock_state_on_streaming(
+    bulk_assignment_service, mock_athena_client
+):
+    """Streaming from cache should re-annotate current lock state."""
+    mock_athena_client.search_incidents.return_value = {
+        "results": SAMPLE_IR_TICKETS[:2]
+    }
+    mock_athena_client.search_service_requests.return_value = {"results": []}
+    await bulk_assignment_service.refresh_cache()
+
+    # Lock a ticket after cache was built
+    bulk_assignment_service.lock_tickets(["IR10001"], "user_a")
+
+    streamed = []
+
+    async def on_ticket(ticket, count):
+        streamed.append(ticket)
+
+    await bulk_assignment_service.fetch_queue_streaming(on_ticket=on_ticket)
+
+    # The locked ticket should have the lock annotation
+    ir10001 = next(t for t in streamed if t.id == "IR10001")
+    ir10002 = next(t for t in streamed if t.id == "IR10002")
+    assert ir10001.locked_by == "user_a"
+    assert ir10002.locked_by is None

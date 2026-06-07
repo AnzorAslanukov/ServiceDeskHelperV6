@@ -12,6 +12,7 @@ Orchestrates:
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from typing import Any
 # Read-only imports from core (never modify these source files)
 from src.clients.athena_client import AthenaClient
 from src.models.assignment import AssignmentRecommendation, TicketInfo
-from src.services.assignment import AssignmentService
+from src.services.assignment import AssignmentService, LOCATION_GUID_TO_FULLNAME
 
 from feature4.models import (
     BulkAssignResponse,
@@ -52,6 +53,12 @@ class BulkAssignmentService:
             "ir": "1a59b3b9-84a3-13ce-f50c-79b8a99f5531",  # Service Desk\Validation IR
             "sr": "c954d465-65a0-9e43-9b02-b353e87bdb37",  # Service Desk\Validation SR
         },
+    }
+
+    # Reverse lookup: GUID → queue display name (for resolving GUIDs in view responses)
+    QUEUE_GUID_TO_NAME: dict[str, str] = {
+        "1a59b3b9-84a3-13ce-f50c-79b8a99f5531": "Service Desk\\Validation",
+        "c954d465-65a0-9e43-9b02-b353e87bdb37": "Service Desk\\Validation",
     }
 
     # ── Status GUID Mappings ──────────────────────────────────────────
@@ -123,6 +130,9 @@ class BulkAssignmentService:
         self._locks: dict[str, str] = {}
         # Last known ticket IDs for incremental diff refresh
         self._last_known_ticket_ids: set[str] = set()
+        # ── Queue Cache ──────────────────────────────────────────────
+        # Eagerly populated on startup; refreshed every 30s by auto-refresh.
+        self._cached_queue: list[QueueTicketSummary] | None = None
 
     # ── Queue Management ──────────────────────────────────────────────
 
@@ -284,25 +294,41 @@ class BulkAssignmentService:
         statuses: list[str] | None = None,
     ) -> int:
         """
-        Fetch queue tickets and stream them one-by-one via callbacks.
+        Stream queue tickets one-by-one via callbacks.
 
-        Same logic as fetch_queue() but instead of collecting all tickets
-        and returning them at once, each processed ticket is immediately
-        passed to the on_ticket callback. This enables progressive UI
-        rendering so users see tickets appearing as they are processed.
+        If the in-memory cache is populated (from startup or auto-refresh),
+        streams directly from cache — no Athena call needed. Falls back to
+        fetching from Athena if the cache is empty.
 
         Args:
             on_ticket: Async callback(ticket, running_count) called for
-                each ticket as it is processed from the raw Athena response.
+                each ticket as it is processed.
             on_phase: Optional async callback(phase_name) called when
-                processing transitions between phases (e.g., 'fetching',
-                'processing_ir', 'processing_sr', 'complete').
+                processing transitions between phases.
             tier_queue_name: Tier queue name to query (default: Validation).
             statuses: Ticket statuses to include.
 
         Returns:
             Total number of tickets streamed.
         """
+        # ── Fast path: serve from cache ────────────────────────────────
+        if self._cached_queue is not None:
+            if on_phase:
+                await on_phase("serving_from_cache")
+
+            count = 0
+            for ticket in self._cached_queue:
+                # Re-annotate lock state (may have changed since cache was built)
+                ticket.locked_by = self._locks.get(ticket.id)
+                count += 1
+                await on_ticket(ticket, count)
+
+            if on_phase:
+                await on_phase("complete")
+
+            return count
+
+        # ── Slow path: fetch from Athena (cache not yet populated) ─────
         if statuses is None:
             statuses = ["Active", "Work in Progress"]
 
@@ -412,6 +438,9 @@ class BulkAssignmentService:
         # Update the last-known set for next diff
         self._last_known_ticket_ids = current_ids
 
+        # Update the queue cache so subsequent streaming loads are instant
+        self._cached_queue = queue_response.tickets
+
         # Clean up locks for removed tickets (they no longer exist in queue)
         for tid in removed_ids:
             self._locks.pop(tid, None)
@@ -432,6 +461,32 @@ class BulkAssignmentService:
         rather than treating every ticket as "added".
         """
         self._last_known_ticket_ids = set(ticket_ids)
+
+    # ── Queue Cache ───────────────────────────────────────────────────
+
+    async def refresh_cache(self) -> int:
+        """
+        Fetch the full queue from Athena and store it in the in-memory cache.
+
+        Called eagerly on server startup and periodically by the auto-refresh
+        loop. After this completes, ``fetch_queue_streaming()`` will serve
+        tickets from cache instead of calling Athena.
+
+        Returns:
+            Number of tickets now in the cache.
+        """
+        queue_response = await self.fetch_queue()
+        self._cached_queue = queue_response.tickets
+        self._last_known_ticket_ids = {t.id for t in queue_response.tickets}
+        logger.info(
+            "Queue cache refreshed: %d tickets", len(self._cached_queue)
+        )
+        return len(self._cached_queue)
+
+    @property
+    def cached_queue(self) -> list[QueueTicketSummary] | None:
+        """Return the cached queue (None if not yet populated)."""
+        return self._cached_queue
 
     # ── Lock Management ───────────────────────────────────────────────
 
@@ -842,6 +897,65 @@ class BulkAssignmentService:
         return raw_priority
 
     @staticmethod
+    def _resolve_location_path(raw: dict[str, Any]) -> str | None:
+        """
+        Resolve location to parent\\child format (e.g., 'HUP\\RHOADS').
+
+        Uses the same LOCATION_GUID_TO_FULLNAME lookup as Feature #3.
+        Falls back to leaf name if GUID resolution is unavailable.
+        """
+        import re
+
+        def _last_two_segments(path: str) -> str:
+            parts = path.split("\\")
+            if len(parts) >= 2:
+                return "\\".join(parts[-2:])
+            return path
+
+        # 1. Try location dict: {"id": "GUID", "name": "leaf"}
+        loc = raw.get("location")
+        location_guid: str | None = None
+        leaf_name: str | None = None
+
+        if isinstance(loc, dict):
+            location_guid = loc.get("id")
+            leaf_name = loc.get("name") or loc.get("displayName")
+            # Check for explicit path fields
+            full_path = loc.get("path") or loc.get("fullName") or loc.get("fullname")
+            if full_path and "\\" in full_path:
+                return _last_two_segments(full_path)
+        elif isinstance(loc, str):
+            if re.match(
+                r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                loc,
+                re.IGNORECASE,
+            ):
+                location_guid = loc
+            elif "\\" in loc:
+                return _last_two_segments(loc)
+            else:
+                leaf_name = loc
+
+        # 2. Check locationValue companion field (view endpoint format)
+        location_value = raw.get("locationValue")
+        if isinstance(location_value, str) and "\\" in location_value:
+            return _last_two_segments(location_value)
+
+        # 3. Resolve GUID → full path using the location lookup table
+        if location_guid and LOCATION_GUID_TO_FULLNAME:
+            resolved = LOCATION_GUID_TO_FULLNAME.get(location_guid)
+            if resolved:
+                return _last_two_segments(resolved)
+
+        # 4. Fallback to locationValue or leaf name
+        if isinstance(location_value, str) and location_value:
+            return location_value
+        if leaf_name:
+            return leaf_name
+
+        return None
+
+    @staticmethod
     def _raw_to_queue_summary(
         raw: dict[str, Any],
         ticket_type: str,
@@ -862,6 +976,18 @@ class BulkAssignmentService:
         tier_queue = raw.get("tierQueue")
         if isinstance(tier_queue, dict):
             tier_queue = tier_queue.get("name")
+        elif isinstance(tier_queue, str) and re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            tier_queue,
+            re.IGNORECASE,
+        ):
+            # View endpoint flat format: tierQueue is a GUID — resolve to name
+            tier_queue = (
+                BulkAssignmentService.QUEUE_GUID_TO_NAME.get(tier_queue)
+                or raw.get("supportGroupValue")
+                or raw.get("tierQueueValue")
+                or tier_queue
+            )
 
         # The Athena view endpoint with $expand=affectedUser returns flattened
         # fields (e.g., 'affectedUser_DisplayName', 'affectedUser_UserName')
@@ -876,8 +1002,6 @@ class BulkAssignmentService:
             )
 
         description = raw.get("description")
-        if description and len(description) > 200:
-            description = description[:200] + "..."
 
         # Extract assigned user (view endpoint may use flat or nested format)
         assigned_user = raw.get("assignedTo_DisplayName") or raw.get("assignedTo_UserName")
@@ -886,14 +1010,8 @@ class BulkAssignmentService:
             if isinstance(assigned_to, dict):
                 assigned_user = assigned_to.get("displayName") or assigned_to.get("userName")
 
-        # Extract location (view endpoint returns locationValue as a string)
-        location = raw.get("locationValue")
-        if not location:
-            loc = raw.get("location")
-            if isinstance(loc, dict):
-                location = loc.get("name")
-            elif isinstance(loc, str):
-                location = loc
+        # Extract location with parent\child resolution (same as Feature #3)
+        location = BulkAssignmentService._resolve_location_path(raw)
 
         return QueueTicketSummary(
             id=ticket_id,

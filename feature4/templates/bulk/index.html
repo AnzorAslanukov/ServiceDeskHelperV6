@@ -11,26 +11,11 @@
 <!-- Toast container for notifications -->
 <div class="bulk-toast-container" id="bulkToastContainer"></div>
 
-<!-- Login Screen (shown first) -->
-<div id="bulkLoginScreen" class="bulk-login-overlay">
-    <div class="bulk-login-card">
-        <h2>📦 Bulk Assignment</h2>
-        <p>Enter your user ID to start processing the Validation queue.</p>
-        <form onsubmit="bulkLogin(event)">
-            <div class="form-group">
-                <label class="form-label" for="bulkUserId">User ID</label>
-                <input type="text" class="form-input" id="bulkUserId"
-                       placeholder="e.g. aslanuka" required autocomplete="off">
-            </div>
-            <button type="submit" class="btn btn-primary" style="width:100%;padding:0.65rem;font-size:1rem;">
-                🚀 Enter Queue
-            </button>
-        </form>
-    </div>
-</div>
+<!-- Inject authenticated user ID for JavaScript -->
+<script>window.BULK_USER_ID = {{ bulk_user_id | tojson }};</script>
 
-<!-- Main Queue View (hidden until login) -->
-<div id="bulkMainView" style="display:none;">
+<!-- Main Queue View (visible immediately — user already authenticated) -->
+<div id="bulkMainView">
 
     <!-- Status Bar -->
     <div class="bulk-status-bar">

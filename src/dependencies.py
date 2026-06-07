@@ -35,6 +35,7 @@ def get_auth_service() -> AuthService:
         allowed_usernames=[u.strip() for u in settings.allowed_usernames.split(",")],
         session_secret=settings.session_secret_key,
         session_expire_hours=settings.session_expire_hours,
+        enable_test_accounts=settings.enable_test_accounts,
     )
 
 

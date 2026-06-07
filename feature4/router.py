@@ -60,6 +60,39 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/bulk", tags=["bulk"])
 
+# ── Eager Cache Population on Startup ─────────────────────────────────
+
+_cache_startup_task: asyncio.Task | None = None
+
+
+async def _populate_cache_on_startup() -> None:
+    """
+    Background task that eagerly populates the queue cache on server startup.
+
+    Runs once after the event loop starts. If it fails (e.g., Athena
+    unreachable), logs a warning — the cache will be populated on the
+    first auto-refresh cycle or user connection instead.
+    """
+    from feature4.dependencies import get_bulk_assignment_service
+
+    try:
+        service = get_bulk_assignment_service()
+        count = await service.refresh_cache()
+        logger.info("Startup cache population complete: %d tickets cached", count)
+    except Exception as exc:
+        logger.warning("Startup cache population failed (will retry on first refresh): %s", exc)
+
+
+@router.on_event("startup")
+async def _on_startup() -> None:
+    """Schedule eager cache population when the app starts."""
+    global _cache_startup_task
+    _cache_startup_task = asyncio.create_task(
+        _populate_cache_on_startup(),
+        name="bulk_cache_startup",
+    )
+
+
 # ── Background Auto-Refresh Task ──────────────────────────────────────
 
 _refresh_task: asyncio.Task | None = None
@@ -157,9 +190,13 @@ templates = Jinja2Templates(directory=_TEMPLATES_DIRS)
 @router.get("/ui", response_class=HTMLResponse)
 async def bulk_ui_page(request: Request):
     """Serve the Bulk Assignment web page."""
+    # Get the authenticated user's display name from the session (set by AuthMiddleware)
+    user = getattr(request.state, "user", None)
+    bulk_user_id = user.display_name if user else "Unknown"
+
     return templates.TemplateResponse(
         "bulk/index.html",
-        {"request": request, "active_page": "bulk"},
+        {"request": request, "active_page": "bulk", "bulk_user_id": bulk_user_id},
     )
 
 

@@ -31,22 +31,65 @@ var _USER_COLOR_SELF = '#4A90D9';
 // Green color for unlocked tickets
 var _USER_COLOR_UNLOCKED = '#27ae60';
 
-// ── Login ─────────────────────────────────────────────────────────────
+// ── Toast Batching (debounce rapid-fire events into single notifications) ──
+// Key: "user_id|event_type" → { count: N, timer: setTimeout_id }
+var _toastBatchBuffer = {};
+var _TOAST_BATCH_DELAY_MS = 200;
 
-function bulkLogin(evt) {
-    if (evt) evt.preventDefault();
-    var input = document.getElementById('bulkUserId');
-    var userId = input.value.trim();
-    if (!userId) return;
+/**
+ * Batch rapid-fire toasts from the same user + event type into a single
+ * notification. E.g., 10 unlock events within 200ms become:
+ * "Test User 1 unlocked 10 tickets"
+ */
+function _batchedToast(userId, eventType, toastType) {
+    var key = userId + '|' + eventType;
+    var entry = _toastBatchBuffer[key];
+
+    if (entry) {
+        // Already buffering — increment count and reset timer
+        entry.count++;
+        clearTimeout(entry.timer);
+    } else {
+        entry = { count: 1, timer: null };
+        _toastBatchBuffer[key] = entry;
+    }
+
+    entry.timer = setTimeout(function () {
+        var count = entry.count;
+        delete _toastBatchBuffer[key];
+
+        // Build the coalesced message
+        var verb = eventType === 'lock' ? 'locked' :
+                   eventType === 'unlock' ? 'unlocked' :
+                   eventType === 'assign' ? 'assigned' : eventType;
+        var noun = count === 1 ? 'ticket' : 'tickets';
+        _showToast(userId + ' ' + verb + ' ' + count + ' ' + noun, toastType || 'info');
+    }, _TOAST_BATCH_DELAY_MS);
+}
+
+// ── Auto-Init (uses authenticated session) ────────────────────────────
+
+function _bulkAutoInit() {
+    // Read the authenticated user's display name injected by the server template
+    var userId = window.BULK_USER_ID;
+    if (!userId) {
+        console.error('BULK_USER_ID not set — cannot initialize bulk assignment');
+        return;
+    }
 
     _bulkUserId = userId;
-    document.getElementById('bulkLoginScreen').style.display = 'none';
-    document.getElementById('bulkMainView').style.display = '';
     document.getElementById('bulkUserDisplay').textContent = userId;
 
     _connectWebSocket();
     // Queue will be loaded via WebSocket streaming after connection opens
     // (see _bulkWs.onopen handler which sends load_queue action)
+}
+
+// Initialize on DOM ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _bulkAutoInit);
+} else {
+    _bulkAutoInit();
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────
@@ -121,14 +164,14 @@ function _handleWsEvent(data) {
         _updateTicketRow(data.ticket_id);
         _updateCounts();
         if (data.user_id !== _bulkUserId) {
-            _showToast(data.user_id + ' locked ' + data.ticket_id, 'info');
+            _batchedToast(data.user_id, 'lock', 'info');
         }
     } else if (event === 'unlock') {
         delete _bulkLocks[data.ticket_id];
         _updateTicketRow(data.ticket_id);
         _updateCounts();
         if (data.user_id !== _bulkUserId) {
-            _showToast(data.user_id + ' unlocked ' + data.ticket_id, 'info');
+            _batchedToast(data.user_id, 'unlock', 'info');
         }
     } else if (event === 'assign') {
         // Remove ticket from queue
@@ -140,7 +183,7 @@ function _handleWsEvent(data) {
         _renderQueue();
         _updateCounts();
         if (data.user_id !== _bulkUserId) {
-            _showToast(data.user_id + ' assigned ' + data.ticket_id, 'info');
+            _batchedToast(data.user_id, 'assign', 'info');
         }
 
     // ── Recommendation Progress Events ────────────────────────────
@@ -795,16 +838,19 @@ function _renderQueue() {
         '<th>Created</th>' +
         '</tr></thead><tbody>';
 
-    _bulkQueue.forEach(function (ticket) {
+    _bulkQueue.forEach(function (ticket, idx) {
         var lockOwner = _bulkLocks[ticket.id] || null;
         var isMyLock = lockOwner === _bulkUserId;
         var isOtherLock = lockOwner && !isMyLock;
         var isSelected = _bulkSelected.has(ticket.id);
         var hasRec = !!_bulkRecs[ticket.id];
 
-        var rowClass = '';
-        if (isMyLock) rowClass = 'locked-by-me';
-        else if (isOtherLock) rowClass = 'locked-by-other';
+        // Zebra striping class for visual row grouping
+        var zebraClass = (idx % 2 === 0) ? 'bulk-row-even' : 'bulk-row-odd';
+
+        var rowClass = zebraClass;
+        if (isMyLock) rowClass += ' locked-by-me';
+        else if (isOtherLock) rowClass += ' locked-by-other';
 
         // Add recommendation progress classes
         if (_bulkRecProcessing === ticket.id) rowClass += ' rec-processing';
@@ -894,56 +940,110 @@ function _renderDetailRow(ticket) {
     var isMyLock = _bulkLocks[ticket.id] === _bulkUserId;
     var html = '<tr class="bulk-detail-row" style="display:none;">' +
         '<td colspan="' + colspan + '">' +
-        '<div class="bulk-detail-grid">';
+        '<div class="assignment-ticket-body">';
 
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Title</span>' +
-        '<span class="bulk-detail-value">' + _escapeHtml(ticket.title || '—') + '</span>' +
-        '</div>';
+    // Section: Affected User
+    if (ticket.affected_user) {
+        html += '<div class="ticket-section">' +
+            '<div class="ticket-section-header">👤 Affected User</div>' +
+            '<div class="ticket-section-grid">';
+        html += '<div class="ticket-field">' +
+            '<span class="ticket-field-label">Name:</span>' +
+            '<span class="ticket-field-value ticket-field-highlight">' + _escapeHtml(ticket.affected_user) + '</span>' +
+            '</div>';
+        if (ticket.assigned_user) {
+            html += '<div class="ticket-field">' +
+                '<span class="ticket-field-label">Assigned To:</span>' +
+                '<span class="ticket-field-value">' + _escapeHtml(ticket.assigned_user) + '</span>' +
+                '</div>';
+        }
+        html += '</div></div>';
+    }
 
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Status</span>' +
-        '<span class="bulk-detail-value">' + _escapeHtml(ticket.status || '—') + '</span>' +
-        '</div>';
+    // Section: Location
+    if (ticket.location) {
+        html += '<div class="ticket-section">' +
+            '<div class="ticket-section-header">📍 Location</div>' +
+            '<div class="ticket-section-grid">';
+        html += '<div class="ticket-field">' +
+            '<span class="ticket-field-label">Location:</span>' +
+            '<span class="ticket-field-value ticket-field-location">' + _escapeHtml(ticket.location) + '</span>' +
+            '</div>';
+        html += '</div></div>';
+    }
 
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Priority</span>' +
-        '<span class="bulk-detail-value">' + _escapeHtml(String(ticket.priority || '—')) + '</span>' +
-        '</div>';
+    // Section: Status & Routing
+    html += '<div class="ticket-section">' +
+        '<div class="ticket-section-header">📊 Status & Routing</div>' +
+        '<div class="ticket-section-grid">';
 
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Location</span>' +
-        '<span class="bulk-detail-value">' + _escapeHtml(ticket.location || '—') + '</span>' +
-        '</div>';
+    // Type
+    html += '<div class="ticket-field">' +
+        '<span class="ticket-field-label">Type:</span>' +
+        '<span class="ticket-field-value">';
+    if (ticket.ticket_type === 'incident') {
+        html += '<span class="ticket-type-badge ticket-type-ir">Incident</span>';
+    } else {
+        html += '<span class="ticket-type-badge ticket-type-sr">Service Request</span>';
+    }
+    html += '</span></div>';
 
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Tier Queue</span>' +
-        '<span class="bulk-detail-value">' + _escapeHtml(ticket.tier_queue || '—') + '</span>' +
-        '</div>';
-
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Affected User</span>' +
-        '<span class="bulk-detail-value">' + _escapeHtml(ticket.affected_user || '—') + '</span>' +
-        '</div>';
-
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Assigned User</span>' +
-        '<span class="bulk-detail-value">' + _escapeHtml(ticket.assigned_user || '—') + '</span>' +
-        '</div>';
-
-    html += '<div class="bulk-detail-item">' +
-        '<span class="bulk-detail-label">Created Date</span>' +
-        '<span class="bulk-detail-value">' + _formatDate(ticket.created_date) + '</span>' +
-        '</div>';
-
-    if (ticket.description) {
-        html += '<div class="bulk-detail-item bulk-detail-description">' +
-            '<span class="bulk-detail-label">Description</span>' +
-            '<span class="bulk-detail-value">' + _escapeHtml(ticket.description) + '</span>' +
+    // Status
+    if (ticket.status) {
+        html += '<div class="ticket-field">' +
+            '<span class="ticket-field-label">Status:</span>' +
+            '<span class="ticket-field-value"><span class="ticket-status-badge">' + _escapeHtml(ticket.status) + '</span></span>' +
             '</div>';
     }
 
-    html += '</div>';  // close bulk-detail-grid
+    // Priority
+    if (ticket.priority) {
+        var priClass = 'ticket-priority-badge priority-' + String(ticket.priority).toLowerCase();
+        html += '<div class="ticket-field">' +
+            '<span class="ticket-field-label">Priority:</span>' +
+            '<span class="ticket-field-value"><span class="' + priClass + '">' + _escapeHtml(String(ticket.priority)) + '</span></span>' +
+            '</div>';
+    }
+
+    // Current Group
+    if (ticket.tier_queue) {
+        html += '<div class="ticket-field">' +
+            '<span class="ticket-field-label">Current Group:</span>' +
+            '<span class="ticket-field-value ticket-field-group">' + _escapeHtml(ticket.tier_queue) + '</span>' +
+            '</div>';
+    }
+
+    html += '</div></div>';  // close ticket-section-grid + ticket-section
+
+    // Section: Creation Info
+    if (ticket.created_date) {
+        html += '<div class="ticket-section">' +
+            '<div class="ticket-section-header">🕐 Creation Info</div>' +
+            '<div class="ticket-section-grid">';
+        html += '<div class="ticket-field">' +
+            '<span class="ticket-field-label">Created:</span>' +
+            '<span class="ticket-field-value">' + _formatDate(ticket.created_date) + '</span>' +
+            '</div>';
+        html += '</div></div>';
+    }
+
+    // Section: Title
+    if (ticket.title) {
+        html += '<div class="ticket-section">' +
+            '<div class="ticket-section-header">📝 Title</div>' +
+            '<div class="ticket-title-text">' + _escapeHtml(ticket.title) + '</div>' +
+            '</div>';
+    }
+
+    // Section: Description
+    if (ticket.description) {
+        html += '<div class="ticket-section">' +
+            '<div class="ticket-section-header">📄 Description</div>' +
+            '<div class="ticket-description-full">' + _escapeHtml(ticket.description) + '</div>' +
+            '</div>';
+    }
+
+    html += '</div>';  // close assignment-ticket-body
 
     // Manual assign form — only for tickets locked by the current user
     if (isMyLock) {
@@ -1057,29 +1157,63 @@ function _renderRecRow(ticketId) {
 
     if (rec.success && rec.recommendation) {
         var r = rec.recommendation;
+        var confPct = Math.round((r.confidence || 0) * 100);
+        var method = r.method || 'classifier';
 
+        // ── Top Recommendation with confidence ──
+        html += '<div class="bulk-rec-top">';
+        html += '<div class="bulk-rec-top-group">';
+        html += '<span class="bulk-rec-label">Top Prediction:</span> ';
+        html += '<strong>' + _escapeHtml(r.support_group_name) + '</strong>';
+        html += ' <span class="bulk-rec-method-badge ' + _escapeHtml(method) + '">' + _escapeHtml(method) + '</span>';
+        html += '</div>';
+        html += '<div class="bulk-rec-confidence">';
+        html += '<div class="bulk-rec-conf-bar-container">';
+        html += '<div class="bulk-rec-conf-bar" style="width:' + confPct + '%;"></div>';
+        html += '</div>';
+        html += '<span class="bulk-rec-conf-text">' + confPct + '%</span>';
+        html += '</div>';
+        html += '</div>';
+
+        // ── Alternatives table ──
+        var alts = r.alternatives || [];
+        if (alts.length > 0) {
+            html += '<div class="bulk-rec-alternatives">';
+            html += '<table class="bulk-rec-alt-table">';
+            html += '<thead><tr><th>Alternative</th><th>Confidence</th><th></th></tr></thead>';
+            html += '<tbody>';
+            for (var i = 0; i < alts.length; i++) {
+                var alt = alts[i];
+                var altPct = Math.round((alt.confidence || 0) * 100);
+                html += '<tr class="bulk-rec-alt-row">';
+                html += '<td>' + _escapeHtml(alt.support_group) + '</td>';
+                html += '<td><div class="bulk-rec-conf-bar-container small">' +
+                    '<div class="bulk-rec-conf-bar" style="width:' + altPct + '%;"></div>' +
+                    '</div><span class="bulk-rec-conf-text">' + altPct + '%</span></td>';
+                html += '<td><button class="btn-alt-select" onclick="bulkSelectAlternative(\'' +
+                    _escapeHtml(ticketId) + '\', ' + i + '); event.stopPropagation();">Use ↗</button></td>';
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+            html += '</div>';
+        }
+
+        // ── Editable assignment fields (no GUID visible) ──
         html += '<div class="bulk-rec-grid">';
 
-        // Support Group (editable)
+        // Support Group (editable — hidden data-guid attribute for API)
         html += '<div class="bulk-rec-field">' +
-            '<label>Support Group</label>' +
+            '<label>Assign To</label>' +
             '<input type="text" value="' + _escapeHtml(override.tier_queue_name || r.support_group_name) + '"' +
+            ' data-guid="' + _escapeHtml(override.tier_queue_guid || r.support_group_guid) + '"' +
             ' onchange="bulkUpdateOverride(\'' + _escapeHtml(ticketId) + '\', \'tier_queue_name\', this.value)"' +
             ' placeholder="Support group name">' +
-            '</div>';
-
-        // Support Group GUID (editable)
-        html += '<div class="bulk-rec-field">' +
-            '<label>Support Group GUID</label>' +
-            '<input type="text" value="' + _escapeHtml(override.tier_queue_guid || r.support_group_guid) + '"' +
-            ' onchange="bulkUpdateOverride(\'' + _escapeHtml(ticketId) + '\', \'tier_queue_guid\', this.value)"' +
-            ' placeholder="GUID" style="font-family:monospace;font-size:0.8rem;">' +
             '</div>';
 
         // Priority (editable)
         html += '<div class="bulk-rec-field">' +
             '<label>Priority</label>' +
-            '<input type="text" value="' + _escapeHtml(String(override.priority || r.priority)) + '"' +
+            '<input type="text" value="' + _escapeHtml(String(override.priority || r.priority || '')) + '"' +
             ' onchange="bulkUpdateOverride(\'' + _escapeHtml(ticketId) + '\', \'priority\', this.value)"' +
             ' placeholder="Priority">' +
             '</div>';
@@ -1097,6 +1231,44 @@ function _renderRecRow(ticketId) {
 
     html += '</div></td></tr>';
     return html;
+}
+
+/**
+ * Select an alternative recommendation for a ticket.
+ * Updates the override with the alternative's support group name and GUID.
+ */
+function bulkSelectAlternative(ticketId, altIndex) {
+    var rec = _bulkRecs[ticketId];
+    if (!rec || !rec.recommendation) return;
+    var alts = rec.recommendation.alternatives || [];
+    if (altIndex < 0 || altIndex >= alts.length) return;
+
+    var alt = alts[altIndex];
+    // Look up the GUID from the support groups list
+    var ticket = _findTicket(ticketId);
+    var ticketType = ticket ? ticket.ticket_type : 'incident';
+    var groups = _bulkSupportGroups[ticketType] || [];
+    var guid = '';
+    for (var i = 0; i < groups.length; i++) {
+        if (groups[i].name === alt.support_group) {
+            guid = groups[i].guid;
+            break;
+        }
+    }
+
+    // Update overrides
+    bulkUpdateOverride(ticketId, 'tier_queue_name', alt.support_group);
+    if (guid) {
+        bulkUpdateOverride(ticketId, 'tier_queue_guid', guid);
+    }
+
+    // Re-render the rec row
+    var recRow = document.querySelector('tr[data-rec-for="' + ticketId + '"]');
+    if (recRow) {
+        var tmp = document.createElement('tbody');
+        tmp.innerHTML = _renderRecRow(ticketId);
+        recRow.replaceWith(tmp.firstElementChild);
+    }
 }
 
 function _updateTicketRow(ticketId) {

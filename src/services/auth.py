@@ -33,6 +33,12 @@ class AuthUser:
 class AuthService:
     """LDAP-based authentication and authorization service."""
 
+    # ── Dev/Debug Test Accounts (only active when enable_test_accounts=True) ──
+    TEST_ACCOUNTS: dict[str, dict[str, str]] = {
+        "testuser1": {"password": "test123", "display_name": "Test User 1"},
+        "testuser2": {"password": "test123", "display_name": "Test User 2"},
+    }
+
     def __init__(
         self,
         ldap_server: str,
@@ -41,6 +47,7 @@ class AuthService:
         allowed_usernames: list[str],
         session_secret: str,
         session_expire_hours: float = 12.0,
+        enable_test_accounts: bool = False,
     ):
         self.ldap_server = ldap_server
         self.ldap_domain = ldap_domain
@@ -48,6 +55,7 @@ class AuthService:
         self.allowed_usernames = [u.strip().lower() for u in allowed_usernames]
         self.session_secret = session_secret
         self.session_expire_seconds = session_expire_hours * 3600
+        self.enable_test_accounts = enable_test_accounts
 
     def authenticate(self, username: str, password: str) -> AuthUser | None:
         """
@@ -59,6 +67,19 @@ class AuthService:
         username = username.strip()
         if not username or not password:
             return None
+
+        # ── Dev/Debug Test Account Bypass ─────────────────────────────
+        if self.enable_test_accounts and username.lower() in self.TEST_ACCOUNTS:
+            account = self.TEST_ACCOUNTS[username.lower()]
+            if password == account["password"]:
+                logger.info("Test account login: %s", username)
+                return AuthUser(
+                    username=username.lower(),
+                    display_name=account["display_name"],
+                    groups=["test"],
+                    login_time=time.time(),
+                )
+            return None  # Wrong password for test account
 
         # Attempt LDAP bind using SIMPLE auth with UPN format
         # (NTLM requires MD4 which is removed in Python 3.14)
