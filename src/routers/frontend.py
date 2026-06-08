@@ -336,17 +336,13 @@ def _format_datetime(raw: str | None) -> str | None:
     if not raw:
         return None
     from datetime import datetime
-    for fmt in (
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%dT%H:%M:%S.%fZ",
-        "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%S",
-    ):
-        try:
-            dt = datetime.strptime(raw, fmt)
-            return dt.strftime("%H:%M %m/%d/%Y")
-        except ValueError:
-            continue
+    # Use fromisoformat which handles all ISO 8601 variants including
+    # timezone offsets (e.g., "2026-01-14T00:05:41.79-05:00")
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt.strftime("%H:%M %m/%d/%Y")
+    except (ValueError, AttributeError):
+        pass
     return raw
 
 

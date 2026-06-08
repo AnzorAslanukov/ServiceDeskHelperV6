@@ -14,6 +14,7 @@ from src.clients.databricks_client import DatabricksClient
 from src.services.assignment import AssignmentService
 from src.services.auth import AuthService, AuthUser
 from src.services.chatbot import ChatbotService
+from src.services.knowledge_graph import KnowledgeGraphService
 from src.services.ticket_search import TicketSearchService
 from src.services.turnover import TurnoverService
 
@@ -86,16 +87,30 @@ def get_search_service() -> TicketSearchService:
     )
 
 
+# Singleton knowledge graph service (loaded once at startup, ~81K nodes in memory)
+_knowledge_graph_service: KnowledgeGraphService | None = None
+
+
+def get_knowledge_graph_service() -> KnowledgeGraphService:
+    """Provide a KnowledgeGraphService singleton (loaded once, stays in memory)."""
+    global _knowledge_graph_service
+    if _knowledge_graph_service is None:
+        _knowledge_graph_service = KnowledgeGraphService()
+        _knowledge_graph_service.load()
+    return _knowledge_graph_service
+
+
 # Singleton chatbot service (must be a singleton to preserve session state)
 _chatbot_service: ChatbotService | None = None
 
 
 def get_chatbot_service() -> ChatbotService:
-    """Provide a ChatbotService singleton with injected Databricks client."""
+    """Provide a ChatbotService singleton with injected Databricks client and knowledge graph."""
     global _chatbot_service
     if _chatbot_service is None:
         _chatbot_service = ChatbotService(
             databricks_client=get_databricks_client(),
+            knowledge_graph_service=get_knowledge_graph_service(),
         )
     return _chatbot_service
 

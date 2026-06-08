@@ -278,6 +278,7 @@ def test_build_context_with_docs_and_tickets(
 ):
     """_build_context should include both documentation and ticket sections."""
     context = ChatbotService._build_context(
+        "",  # no graph context
         sample_documentation_results,
         sample_similar_results,
     )
@@ -292,7 +293,7 @@ def test_build_context_with_docs_and_tickets(
 
 def test_build_context_docs_only(sample_documentation_results):
     """_build_context with only docs should not include ticket section."""
-    context = ChatbotService._build_context(sample_documentation_results, [])
+    context = ChatbotService._build_context("", sample_documentation_results, [])
 
     assert "KNOWLEDGE BASE DOCUMENTATION" in context
     assert "SIMILAR HISTORICAL TICKETS" not in context
@@ -300,7 +301,7 @@ def test_build_context_docs_only(sample_documentation_results):
 
 def test_build_context_tickets_only(sample_similar_results):
     """_build_context with only tickets should not include docs section."""
-    context = ChatbotService._build_context([], sample_similar_results)
+    context = ChatbotService._build_context("", [], sample_similar_results)
 
     assert "KNOWLEDGE BASE DOCUMENTATION" not in context
     assert "SIMILAR HISTORICAL TICKETS" in context
@@ -308,9 +309,20 @@ def test_build_context_tickets_only(sample_similar_results):
 
 def test_build_context_empty():
     """_build_context with no results should return a fallback message."""
-    context = ChatbotService._build_context([], [])
+    context = ChatbotService._build_context("", [], [])
 
     assert "No relevant documentation" in context
+
+
+def test_build_context_with_graph_context(sample_similar_results):
+    """_build_context should include graph context when provided."""
+    graph_ctx = "=== STRUCTURED KNOWLEDGE ===\n• Escalate to: EUS\\HUP"
+    context = ChatbotService._build_context(graph_ctx, [], sample_similar_results)
+
+    assert "STRUCTURED KNOWLEDGE" in context
+    assert "Escalate to: EUS\\HUP" in context
+    assert "SIMILAR HISTORICAL TICKETS" in context
+    assert "KNOWLEDGE BASE DOCUMENTATION" not in context
 
 
 # ── Source Building ───────────────────────────────────────────────────
@@ -318,7 +330,7 @@ def test_build_context_empty():
 
 def test_build_sources_documentation(sample_documentation_results):
     """_build_sources should create documentation citations with previews."""
-    sources = ChatbotService._build_sources(sample_documentation_results, [])
+    sources = ChatbotService._build_sources(None, sample_documentation_results, [])
 
     assert len(sources) == 2
     assert sources[0].type == SourceType.documentation
@@ -330,7 +342,7 @@ def test_build_sources_documentation(sample_documentation_results):
 
 def test_build_sources_tickets(sample_similar_results):
     """_build_sources should create ticket citations."""
-    sources = ChatbotService._build_sources([], sample_similar_results)
+    sources = ChatbotService._build_sources(None, [], sample_similar_results)
 
     assert len(sources) == 5
     assert sources[0].type == SourceType.ticket
@@ -351,7 +363,7 @@ def test_build_sources_truncates_long_content():
         }
     ]
 
-    sources = ChatbotService._build_sources(docs, [])
+    sources = ChatbotService._build_sources(None, docs, [])
 
     assert len(sources[0].content_preview) == 203  # 200 + "..."
     assert sources[0].content_preview.endswith("...")
@@ -359,8 +371,29 @@ def test_build_sources_truncates_long_content():
 
 def test_build_sources_empty():
     """_build_sources with no results should return empty list."""
-    sources = ChatbotService._build_sources([], [])
+    sources = ChatbotService._build_sources(None, [], [])
     assert sources == []
+
+
+def test_build_sources_with_graph_result():
+    """_build_sources should include a knowledge graph citation when graph results exist."""
+    graph_result = {
+        "facts": [
+            {"type": "Escalation", "condition": "System down", "target_team": "EUS"},
+            {"type": "PriorityRule", "condition": "Outage", "priority": "1"},
+        ],
+        "systems_matched": ["PennChart"],
+        "procedures_matched": [],
+        "has_sufficient_context": True,
+    }
+    sources = ChatbotService._build_sources(graph_result, [], [])
+
+    assert len(sources) == 1
+    assert sources[0].type == SourceType.documentation
+    assert "Knowledge Graph" in sources[0].title
+    assert "2 facts" in sources[0].title
+    assert sources[0].similarity == 1.0
+    assert "PennChart" in sources[0].content_preview
 
 
 # ── LLM Message Building ─────────────────────────────────────────────

@@ -307,18 +307,13 @@ class TicketSearchService:
         if not raw_date:
             return None
 
-        # Try common Athena date formats
-        for fmt in (
-            "%Y-%m-%dT%H:%M:%SZ",
-            "%Y-%m-%dT%H:%M:%S.%fZ",
-            "%Y-%m-%dT%H:%M:%S.%f",
-            "%Y-%m-%dT%H:%M:%S",
-        ):
-            try:
-                dt = datetime.strptime(raw_date, fmt)
-                return dt.strftime("%H:%M %m/%d/%Y")
-            except ValueError:
-                continue
+        # Use fromisoformat which handles all ISO 8601 variants including
+        # timezone offsets (e.g., "2026-01-14T00:05:41.79-05:00")
+        try:
+            dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+            return dt.strftime("%H:%M %m/%d/%Y")
+        except (ValueError, AttributeError):
+            pass
 
         # Return raw string as fallback (don't lose data)
         return raw_date
