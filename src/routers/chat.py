@@ -3,13 +3,16 @@ Chat API Router — REST endpoints for Feature #2: Q&A Chatbot.
 
 Endpoints:
     POST /chat              — Send a message and get an AI response
+    POST /chat/stream       — Send a message and stream the AI response (SSE)
     POST /chat/reset        — Clear a session's conversation history
     GET  /chat/history/{id} — Retrieve conversation history for a session
 """
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from src.dependencies import get_chatbot_service
 from src.models.chat import (
@@ -57,6 +60,67 @@ async def chat(
             status_code=502,
             detail=f"Chat service error: {e}",
         )
+
+
+@router.post("/stream")
+async def chat_stream(
+    request: ChatRequest,
+    service: ChatbotService = Depends(get_chatbot_service),
+) -> StreamingResponse:
+    """
+    Send a message and stream the AI response via Server-Sent Events (SSE).
+
+    Events:
+        - event: sources  — source citations (sent first, before tokens)
+        - event: token    — each text chunk as it arrives from the LLM
+        - event: error    — error message if something goes wrong
+        - event: done     — signals completion with session_id and full text
+    """
+
+    async def event_generator():
+        try:
+            async for event in service.chat_stream(
+                message=request.message,
+                session_id=request.session_id,
+                top_k_docs=request.top_k_docs,
+                top_k_tickets=request.top_k_tickets,
+                max_tokens=request.max_tokens,
+            ):
+                event_type = event["event"]
+                data = event.get("data", "")
+
+                if event_type == "progress":
+                    # Progress events send step info for the loading bar
+                    yield f"event: progress\ndata: {json.dumps(data)}\n\n"
+                elif event_type == "token":
+                    # Token events send just the text chunk
+                    yield f"event: token\ndata: {json.dumps(data)}\n\n"
+                elif event_type == "ticket_data":
+                    # Ticket data event sends referenced ticket details for UI card
+                    yield f"event: ticket_data\ndata: {json.dumps(data)}\n\n"
+                elif event_type == "sources":
+                    # Sources event sends the full sources array + session_id
+                    payload = {
+                        "sources": data,
+                        "session_id": event.get("session_id", ""),
+                    }
+                    yield f"event: sources\ndata: {json.dumps(payload)}\n\n"
+                elif event_type == "done":
+                    yield f"event: done\ndata: {json.dumps(data)}\n\n"
+        except Exception as e:
+            logger.exception("Chat stream error for message: %s", request.message[:100])
+            error_payload = {"detail": str(e)}
+            yield f"event: error\ndata: {json.dumps(error_payload)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 
 
 @router.post("/reset")

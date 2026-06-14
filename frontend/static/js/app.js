@@ -765,8 +765,8 @@ function sendChatMessage(evt) {
     input.value = '';
     input.style.height = 'auto';
 
-    // Show typing indicator
-    _showTypingIndicator();
+    // Show progress bar (replaces old typing indicator)
+    _showProgressBar();
 
     // Disable send
     _chatSending = true;
@@ -788,7 +788,8 @@ function sendChatMessage(evt) {
         body.session_id = _chatSessionId;
     }
 
-    fetch('/chat', {
+    // Use streaming endpoint for real-time token display
+    fetch('/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -806,23 +807,333 @@ function sendChatMessage(evt) {
                 throw new Error(detail);
             });
         }
-        return response.json();
-    })
-    .then(function (data) {
+
         _removeTypingIndicator();
-        _chatSessionId = data.session_id;
-        _updateSessionBadge();
-        _appendChatMessage('assistant', data.message, data.sources || []);
+
+        // Create the assistant message bubble for streaming
+        var msgDiv = document.createElement('div');
+        msgDiv.className = 'chat-msg chat-msg-assistant';
+        var bubbleDiv = document.createElement('div');
+        bubbleDiv.className = 'chat-msg-bubble';
+        bubbleDiv.innerHTML = '';
+        msgDiv.appendChild(bubbleDiv);
+
+        var metaDiv = document.createElement('div');
+        metaDiv.className = 'chat-msg-meta';
+        var timeSpan = document.createElement('span');
+        timeSpan.className = 'chat-msg-time';
+        timeSpan.textContent = _formatTime(new Date());
+        metaDiv.appendChild(timeSpan);
+        msgDiv.appendChild(metaDiv);
+
+        var messagesEl = document.getElementById('chatMessages');
+        messagesEl.appendChild(msgDiv);
+        _scrollChatToBottom();
+
+        // Parse SSE stream
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var fullText = '';
+        var sources = [];
+        var ticketDataList = [];
+
+        function processSSE() {
+            return reader.read().then(function (result) {
+                if (result.done) {
+                    // Stream ended — finalize
+                    _finalizeChatStream(msgDiv, bubbleDiv, fullText, sources, ticketDataList);
+                    return;
+                }
+
+                buffer += decoder.decode(result.value, { stream: true });
+
+                // Process complete SSE events (separated by double newlines)
+                var events = buffer.split('\n\n');
+                buffer = events.pop(); // Keep incomplete event in buffer
+
+                for (var i = 0; i < events.length; i++) {
+                    var eventBlock = events[i].trim();
+                    if (!eventBlock) continue;
+
+                    var eventType = '';
+                    var eventData = '';
+                    var lines = eventBlock.split('\n');
+                    for (var j = 0; j < lines.length; j++) {
+                        var line = lines[j];
+                        if (line.indexOf('event: ') === 0) {
+                            eventType = line.substring(7);
+                        } else if (line.indexOf('data: ') === 0) {
+                            eventData = line.substring(6);
+                        }
+                    }
+
+                    if (eventType === 'progress') {
+                        var progressData = JSON.parse(eventData);
+                        _updateProgressBar(progressData);
+                    } else if (eventType === 'token') {
+                        var token = JSON.parse(eventData);
+                        // On first token, hide progress bar and show bubble
+                        if (!fullText) {
+                            _hideProgressBar();
+                            _removeTypingIndicator();
+                        }
+                        fullText += token;
+                        bubbleDiv.innerHTML = _formatMarkdown(fullText);
+                        _scrollChatToBottom();
+                    } else if (eventType === 'ticket_data') {
+                        ticketDataList = JSON.parse(eventData);
+                    } else if (eventType === 'sources') {
+                        var payload = JSON.parse(eventData);
+                        sources = payload.sources || [];
+                        _chatSessionId = payload.session_id || _chatSessionId;
+                        _updateSessionBadge();
+                    } else if (eventType === 'done') {
+                        var doneData = JSON.parse(eventData);
+                        _chatSessionId = doneData.session_id || _chatSessionId;
+                        _updateSessionBadge();
+                        fullText = doneData.full_text || fullText;
+                        _finalizeChatStream(msgDiv, bubbleDiv, fullText, sources, ticketDataList);
+                        return;
+                    } else if (eventType === 'error') {
+                        var errData = JSON.parse(eventData);
+                        _appendChatError(errData.detail || 'Stream error occurred.');
+                        _chatSending = false;
+                        _setChatSendEnabled(true);
+                        input.focus();
+                        return;
+                    }
+                }
+
+                return processSSE();
+            });
+        }
+
+        return processSSE();
     })
     .catch(function (err) {
+        _hideProgressBar();
         _removeTypingIndicator();
         _appendChatError(err.message || 'An unexpected error occurred.');
-    })
-    .finally(function () {
         _chatSending = false;
         _setChatSendEnabled(true);
         input.focus();
     });
+}
+
+function _finalizeChatStream(msgDiv, bubbleDiv, fullText, sources, ticketDataList) {
+    // Store raw text for copy functionality
+    bubbleDiv.setAttribute('data-raw-text', fullText);
+
+    // Final markdown render
+    bubbleDiv.innerHTML = _formatMarkdown(fullText);
+
+    // Add copy button
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'chat-bubble-copy-btn';
+    copyBtn.title = 'Copy to clipboard';
+    copyBtn.textContent = '📋';
+    copyBtn.onclick = function () { copyChatBubble(copyBtn); };
+    bubbleDiv.appendChild(copyBtn);
+
+    // Add ticket card(s) inside the message div (between bubble and sources)
+    if (ticketDataList && ticketDataList.length > 0) {
+        for (var ti = 0; ti < ticketDataList.length; ti++) {
+            var cardHtml = _buildTicketCardHtml(ticketDataList[ti]);
+            var cardEl = document.createElement('div');
+            cardEl.className = 'chat-ticket-card';
+            cardEl.innerHTML = cardHtml;
+            var hdr = cardEl.querySelector('.chat-ticket-card-header');
+            if (hdr) {
+                hdr.addEventListener('click', function () {
+                    toggleChatTicketCard(this);
+                });
+            }
+            msgDiv.appendChild(cardEl);
+        }
+    }
+
+    // Add sources panel if available
+    if (sources && sources.length > 0) {
+        var sourcesHtml = _buildSourcesHtml(sources);
+        var wrapper = document.createElement('div');
+        wrapper.innerHTML = sourcesHtml;
+        // Append all children (button + panel) — must collect first since appendChild mutates
+        var children = Array.from(wrapper.children);
+        for (var si = 0; si < children.length; si++) {
+            msgDiv.appendChild(children[si]);
+        }
+    }
+
+    _scrollChatToBottom();
+    _chatSending = false;
+    _setChatSendEnabled(true);
+    var input = document.getElementById('chatInput');
+    if (input) input.focus();
+}
+
+// ── Ticket Data Card (Collapsible) ────────────────────────────────────
+
+function _renderTicketCards(tickets, messagesEl, beforeEl) {
+    if (!tickets || tickets.length === 0) return;
+
+    for (var i = 0; i < tickets.length; i++) {
+        var ticket = tickets[i];
+        var cardHtml = _buildTicketCardHtml(ticket);
+        var cardWrapper = document.createElement('div');
+        cardWrapper.className = 'chat-ticket-card';
+        cardWrapper.innerHTML = cardHtml;
+        // Attach click handler directly (avoids inline onclick global scope issues)
+        var header = cardWrapper.querySelector('.chat-ticket-card-header');
+        if (header) {
+            header.addEventListener('click', function () {
+                toggleChatTicketCard(this);
+            });
+        }
+        // Insert before the assistant message so the card stays above the response
+        if (beforeEl && beforeEl.parentNode === messagesEl) {
+            messagesEl.insertBefore(cardWrapper, beforeEl);
+        } else {
+            messagesEl.appendChild(cardWrapper);
+        }
+    }
+    _scrollChatToBottom();
+}
+
+function _buildTicketCardHtml(ticket) {
+    var id = ticket.id || 'Unknown';
+    var title = ticket.title || ticket.shortDescription || '';
+    var headerTitle = title.length > 80 ? title.substring(0, 80) + '…' : title;
+
+    var html = '';
+    html += '<div class="chat-ticket-card-header">';
+    html += '<span class="chat-ticket-card-chevron">▶</span>';
+    html += '<span class="chat-ticket-card-id">' + _escapeHtml(id) + '</span>';
+    if (headerTitle) html += '<span class="chat-ticket-card-title">' + _escapeHtml(headerTitle) + '</span>';
+    html += '</div>';
+
+    html += '<div class="chat-ticket-card-body" style="display:none;">';
+
+    // Helper to extract name from dict or string
+    function _ext(field) {
+        if (!field) return '';
+        if (typeof field === 'object') return field.name || field.displayName || '';
+        return String(field);
+    }
+
+    // Affected User section
+    var affectedUser = _ext(ticket.affectedUser);
+    var affectedUserTitle = _ext(ticket.affectedUserTitle);
+    var affectedUserPhone = _ext(ticket.affectedUserPhone) || _ext(ticket.contactPhone);
+    if (affectedUser || affectedUserTitle || affectedUserPhone) {
+        html += '<div class="ticket-section"><div class="ticket-section-header">👤 Affected User</div><div class="ticket-section-grid">';
+        if (affectedUser) html += '<div class="ticket-field"><span class="ticket-field-label">Name:</span><span class="ticket-field-value ticket-field-highlight">' + _escapeHtml(affectedUser) + '</span></div>';
+        if (affectedUserTitle) html += '<div class="ticket-field"><span class="ticket-field-label">Job Title:</span><span class="ticket-field-value">' + _escapeHtml(affectedUserTitle) + '</span></div>';
+        if (affectedUserPhone) html += '<div class="ticket-field"><span class="ticket-field-label">Phone:</span><span class="ticket-field-value">' + _escapeHtml(affectedUserPhone) + '</span></div>';
+        html += '</div></div>';
+    }
+
+    // Location section
+    var location = _ext(ticket.location);
+    var floor = _ext(ticket.floor);
+    var room = _ext(ticket.room);
+    if (location || floor || room) {
+        html += '<div class="ticket-section"><div class="ticket-section-header">📍 Location</div><div class="ticket-section-grid">';
+        if (location) html += '<div class="ticket-field"><span class="ticket-field-label">Location:</span><span class="ticket-field-value ticket-field-location">' + _escapeHtml(location) + '</span></div>';
+        if (floor) html += '<div class="ticket-field"><span class="ticket-field-label">Floor:</span><span class="ticket-field-value">' + _escapeHtml(floor) + '</span></div>';
+        if (room) html += '<div class="ticket-field"><span class="ticket-field-label">Room:</span><span class="ticket-field-value">' + _escapeHtml(room) + '</span></div>';
+        html += '</div></div>';
+    }
+
+    // Status & Routing section
+    var status = _ext(ticket.status);
+    var priority = _ext(ticket.priority) || (ticket.priority && typeof ticket.priority !== 'object' ? String(ticket.priority) : '');
+    var supportGroup = _ext(ticket.supportGroup) || _ext(ticket.tierQueue);
+    var classification = _ext(ticket.classificationPath) || _ext(ticket.classification);
+    var assignedTo = _ext(ticket.assignedToUser);
+    html += '<div class="ticket-section"><div class="ticket-section-header">📊 Status & Routing</div><div class="ticket-section-grid">';
+    if (id.startsWith('IR')) {
+        html += '<div class="ticket-field"><span class="ticket-field-label">Type:</span><span class="ticket-field-value"><span class="ticket-type-badge ticket-type-ir">Incident</span></span></div>';
+    } else if (id.startsWith('SR')) {
+        html += '<div class="ticket-field"><span class="ticket-field-label">Type:</span><span class="ticket-field-value"><span class="ticket-type-badge ticket-type-sr">Service Request</span></span></div>';
+    }
+    if (status) html += '<div class="ticket-field"><span class="ticket-field-label">Status:</span><span class="ticket-field-value"><span class="badge">' + _escapeHtml(status) + '</span></span></div>';
+    if (priority) html += '<div class="ticket-field"><span class="ticket-field-label">Priority:</span><span class="ticket-field-value"><span class="ticket-priority-badge priority-' + _escapeHtml(priority) + '">' + _escapeHtml(priority) + '</span></span></div>';
+    if (supportGroup) html += '<div class="ticket-field"><span class="ticket-field-label">Current Group:</span><span class="ticket-field-value ticket-field-group">' + _escapeHtml(supportGroup) + '</span></div>';
+    if (assignedTo) html += '<div class="ticket-field"><span class="ticket-field-label">Assigned To:</span><span class="ticket-field-value">' + _escapeHtml(assignedTo) + '</span></div>';
+    if (classification) html += '<div class="ticket-field"><span class="ticket-field-label">Classification:</span><span class="ticket-field-value">' + _escapeHtml(classification) + '</span></div>';
+    html += '</div></div>';
+
+    // Creation Info section
+    var createdBy = _ext(ticket.createdBy);
+    var source = _ext(ticket.source);
+    var createdDate = ticket.createdDate || '';
+    var modifiedDate = ticket.modifiedDate || '';
+    if (createdBy || source || createdDate || modifiedDate) {
+        html += '<div class="ticket-section"><div class="ticket-section-header">🕐 Creation Info</div><div class="ticket-section-grid">';
+        if (createdBy) html += '<div class="ticket-field"><span class="ticket-field-label">Created by:</span><span class="ticket-field-value">' + _escapeHtml(createdBy) + '</span></div>';
+        if (source) html += '<div class="ticket-field"><span class="ticket-field-label">Source:</span><span class="ticket-field-value"><span class="ticket-source-badge">' + _escapeHtml(source) + '</span></span></div>';
+        if (createdDate) html += '<div class="ticket-field"><span class="ticket-field-label">Created:</span><span class="ticket-field-value">' + _escapeHtml(createdDate) + '</span></div>';
+        if (modifiedDate) html += '<div class="ticket-field"><span class="ticket-field-label">Modified:</span><span class="ticket-field-value">' + _escapeHtml(modifiedDate) + '</span></div>';
+        html += '</div></div>';
+    }
+
+    // Title section
+    if (title) {
+        html += '<div class="ticket-section"><div class="ticket-section-header">📝 Title</div>';
+        html += '<div class="ticket-title-text">' + _escapeHtml(title) + '</div></div>';
+    }
+
+    // Description section
+    var description = ticket.description || '';
+    if (description) {
+        html += '<div class="ticket-section"><div class="ticket-section-header">📄 Description</div>';
+        html += '<div class="ticket-description-full">' + _escapeHtml(description) + '</div></div>';
+    }
+
+    // Comments section
+    var analystComments = ticket.analystComments || [];
+    var userComments = ticket.userComments || [];
+    if (analystComments.length > 0 || userComments.length > 0) {
+        html += '<div class="ticket-section"><div class="ticket-section-header">💬 Comments</div>';
+        html += '<div class="chat-ticket-comments">';
+
+        // Combine and sort by date (newest first)
+        var allComments = [];
+        for (var a = 0; a < analystComments.length; a++) {
+            var ac = analystComments[a];
+            if (ac.comment) allComments.push({ date: ac.enteredDate || '', author: ac.enteredBy || 'Unknown', text: ac.comment, role: 'Analyst' });
+        }
+        for (var u = 0; u < userComments.length; u++) {
+            var uc = userComments[u];
+            if (uc.comment) allComments.push({ date: uc.enteredDate || '', author: uc.enteredBy || 'Unknown', text: uc.comment, role: 'User' });
+        }
+        allComments.sort(function (a, b) { return b.date.localeCompare(a.date); });
+
+        for (var c = 0; c < allComments.length; c++) {
+            var comment = allComments[c];
+            var dateDisplay = comment.date ? comment.date.substring(0, 19).replace('T', ' ') : 'Unknown date';
+            var roleBadge = comment.role === 'User' ? '<span class="chat-ticket-comment-role user">User</span>' : '<span class="chat-ticket-comment-role analyst">Analyst</span>';
+            html += '<div class="chat-ticket-comment">';
+            html += '<div class="chat-ticket-comment-header">' + roleBadge + ' <strong>' + _escapeHtml(comment.author) + '</strong> <span class="chat-ticket-comment-date">' + _escapeHtml(dateDisplay) + '</span></div>';
+            html += '<div class="chat-ticket-comment-text">' + _escapeHtml(comment.text) + '</div>';
+            html += '</div>';
+        }
+
+        html += '</div></div>';
+    }
+
+    html += '</div>'; // close card-body
+    return html;
+}
+
+function toggleChatTicketCard(header) {
+    var body = header.nextElementSibling;
+    if (!body) return;
+    var isVisible = body.style.display !== 'none';
+    body.style.display = isVisible ? 'none' : 'block';
+    var chevron = header.querySelector('.chat-ticket-card-chevron');
+    if (chevron) chevron.textContent = isVisible ? '▶' : '▼';
 }
 
 // ── Reset Session ─────────────────────────────────────────────────────
@@ -929,7 +1240,15 @@ function _appendChatMessage(role, content, sources) {
     bubbleDiv.className = 'chat-msg-bubble';
 
     if (role === 'assistant') {
+        bubbleDiv.setAttribute('data-raw-text', content);
         bubbleDiv.innerHTML = _formatMarkdown(content);
+        // Add copy button
+        var copyBtn = document.createElement('button');
+        copyBtn.className = 'chat-bubble-copy-btn';
+        copyBtn.title = 'Copy to clipboard';
+        copyBtn.textContent = '📋';
+        copyBtn.onclick = function () { copyChatBubble(copyBtn); };
+        bubbleDiv.appendChild(copyBtn);
     } else {
         bubbleDiv.textContent = content;
     }
@@ -997,6 +1316,115 @@ function _showTypingIndicator() {
     _scrollChatToBottom();
 }
 
+// ── Progress Bar (Informative Loading Indicator) ──────────────────────
+
+var _progressTimerInterval = null;
+var _progressStartTime = null;
+
+function _showProgressBar() {
+    _hideProgressBar(); // Remove any existing
+
+    var container = document.getElementById('chatProgressBar');
+    if (!container) {
+        // Create the progress bar container above messages
+        container = document.createElement('div');
+        container.id = 'chatProgressBar';
+        container.className = 'chat-progress-bar';
+
+        var messagesEl = document.getElementById('chatMessages');
+        if (messagesEl) {
+            messagesEl.parentNode.insertBefore(container, messagesEl);
+        }
+    }
+
+    container.innerHTML =
+        '<div class="chat-progress-header">' +
+            '<span class="chat-progress-timer" id="chatProgressTimer">0.00s</span>' +
+            '<span class="chat-progress-step-counter" id="chatProgressStepCounter">Step 1 of 5</span>' +
+        '</div>' +
+        '<div class="chat-progress-bar-track">' +
+            '<div class="chat-progress-bar-fill" id="chatProgressBarFill" style="width: 0%"></div>' +
+        '</div>' +
+        '<div class="chat-progress-steps" id="chatProgressSteps">' +
+            '<div class="chat-progress-step pending" data-step="1"><span class="step-icon">○</span> Analyzing your question</div>' +
+            '<div class="chat-progress-step pending" data-step="2"><span class="step-icon">○</span> Searching knowledge base</div>' +
+            '<div class="chat-progress-step pending" data-step="3"><span class="step-icon">○</span> Finding similar tickets</div>' +
+            '<div class="chat-progress-step pending" data-step="4"><span class="step-icon">○</span> Fetching ticket details</div>' +
+            '<div class="chat-progress-step pending" data-step="5"><span class="step-icon">○</span> Generating response</div>' +
+        '</div>';
+
+    container.style.display = '';
+
+    // Start timer
+    _progressStartTime = performance.now();
+    _progressTimerInterval = setInterval(function () {
+        var elapsed = (performance.now() - _progressStartTime) / 1000;
+        var timerEl = document.getElementById('chatProgressTimer');
+        if (timerEl) timerEl.textContent = elapsed.toFixed(2) + 's';
+    }, 100);
+}
+
+function _updateProgressBar(data) {
+    // data: {step, total, label, status}
+    var step = data.step;
+    var status = data.status;
+
+    var stepsContainer = document.getElementById('chatProgressSteps');
+    if (!stepsContainer) return;
+
+    var stepEl = stepsContainer.querySelector('[data-step="' + step + '"]');
+    if (!stepEl) return;
+
+    // Update step class and icon
+    stepEl.className = 'chat-progress-step ' + status;
+    var iconEl = stepEl.querySelector('.step-icon');
+    if (iconEl) {
+        if (status === 'running') {
+            iconEl.textContent = '●';
+        } else if (status === 'done') {
+            iconEl.textContent = '✓';
+        } else if (status === 'skipped') {
+            iconEl.textContent = '⊘';
+        }
+    }
+
+    // Update label for skipped steps
+    if (status === 'skipped') {
+        stepEl.innerHTML = '<span class="step-icon">⊘</span> ' + data.label + ' <span class="step-skipped-badge">Skipped</span>';
+    }
+
+    // Update progress bar fill and step counter
+    var completedSteps = stepsContainer.querySelectorAll('.done, .skipped').length;
+    var totalSteps = data.total || 5;
+    var fillPercent = Math.round((completedSteps / totalSteps) * 100);
+
+    var fillEl = document.getElementById('chatProgressBarFill');
+    if (fillEl) fillEl.style.width = fillPercent + '%';
+
+    var counterEl = document.getElementById('chatProgressStepCounter');
+    if (counterEl) {
+        if (status === 'running') {
+            counterEl.textContent = 'Step ' + step + ' of ' + totalSteps;
+        } else {
+            counterEl.textContent = completedSteps + ' of ' + totalSteps + ' complete';
+        }
+    }
+}
+
+function _hideProgressBar() {
+    // Stop timer
+    if (_progressTimerInterval) {
+        clearInterval(_progressTimerInterval);
+        _progressTimerInterval = null;
+    }
+    _progressStartTime = null;
+
+    var container = document.getElementById('chatProgressBar');
+    if (container) {
+        container.style.display = 'none';
+    }
+}
+
 function _removeTypingIndicator() {
     var indicator = document.getElementById('chatTypingIndicator');
     if (indicator) indicator.remove();
@@ -1049,6 +1477,14 @@ function _formatMarkdown(text) {
 
     // Inline code (`...`)
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Headings (must go from most # to fewest to avoid greedy matching)
+    html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+    html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+    html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+    html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
 
     // Bold (**...**)
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -1155,6 +1591,25 @@ function _buildSourcesHtml(sources) {
 // ── Copy Chat Source to Clipboard ─────────────────────────────────────
 
 function copyChatSource(btn, text) {
+    _writeToClipboard(text).then(function () {
+        btn.textContent = '✓';
+        btn.classList.add('copied');
+        setTimeout(function () {
+            btn.textContent = '📋';
+            btn.classList.remove('copied');
+        }, 1500);
+    });
+}
+
+// ── Copy Chat Bubble Content to Clipboard ─────────────────────────────
+
+function copyChatBubble(btn) {
+    var bubble = btn.closest('.chat-msg-bubble');
+    if (!bubble) return;
+
+    // Use the raw markdown text stored in the data attribute
+    var text = bubble.getAttribute('data-raw-text') || bubble.textContent || '';
+
     _writeToClipboard(text).then(function () {
         btn.textContent = '✓';
         btn.classList.add('copied');

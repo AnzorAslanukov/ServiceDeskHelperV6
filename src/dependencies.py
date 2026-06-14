@@ -105,12 +105,16 @@ _chatbot_service: ChatbotService | None = None
 
 
 def get_chatbot_service() -> ChatbotService:
-    """Provide a ChatbotService singleton with injected Databricks client and knowledge graph."""
+    """Provide a ChatbotService singleton with injected Databricks client, knowledge graph, Athena client, and classifier."""
     global _chatbot_service
     if _chatbot_service is None:
+        from src.services.ticket_classifier import get_ticket_classifier
+
         _chatbot_service = ChatbotService(
             databricks_client=get_databricks_client(),
             knowledge_graph_service=get_knowledge_graph_service(),
+            athena_client=get_athena_client(),
+            ticket_classifier=get_ticket_classifier(),
         )
     return _chatbot_service
 

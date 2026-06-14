@@ -200,7 +200,7 @@
    Zebra striping uses even/odd classes added by JS. */
 
 .bulk-table tbody tr[data-ticket-id] {
-    border-top: 2px solid var(--border-color);
+    border-top: 3px solid var(--border-color);
 }
 
 .bulk-table tbody tr[data-ticket-id]:first-child {
@@ -487,11 +487,17 @@
 
 .bulk-rec-row td {
     padding: 0 !important;
-    border-bottom: 2px solid var(--border-color) !important;
+    padding-bottom: 1rem !important;
+    border-bottom: 4px solid var(--penn-blue, #011F5B) !important;
 }
 
 .bulk-rec-panel {
     padding: 1rem 1.25rem;
+    border-left: 4px solid var(--penn-accent, #4A90D9);
+    margin: 0.5rem 0.75rem;
+    border-radius: var(--border-radius-sm, 4px);
+    background: var(--bg-card, #ffffff);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .bulk-rec-header {

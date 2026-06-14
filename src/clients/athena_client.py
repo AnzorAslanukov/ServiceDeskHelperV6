@@ -453,7 +453,7 @@ class AthenaClient:
 
         payload: dict[str, Any] = {"entityId": entity_id}
         if tier_queue_guid is not None:
-            payload["tierQueue"] = {"id": tier_queue_guid}
+            payload["supportGroup"] = {"id": tier_queue_guid}
         if priority is not None:
             payload["priority"] = priority
 

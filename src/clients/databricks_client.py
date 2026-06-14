@@ -258,6 +258,54 @@ class DatabricksClient:
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
+    async def call_llm_stream(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+    ):
+        """
+        Stream Claude Sonnet 4.5 response tokens via the Databricks serving endpoint.
+
+        Uses the OpenAI-compatible chat completions format with stream=true.
+        Yields text chunks as they arrive.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys.
+            max_tokens: Maximum tokens in the response.
+
+        Yields:
+            str: Text chunks (delta content) as they arrive from the LLM.
+        """
+        import json as json_module
+
+        client = await self._get_http_client()
+        async with client.stream(
+            "POST",
+            self._settings.databricks_sonnet_url,
+            headers=self._auth_headers(),
+            json={
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "stream": True,
+            },
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                # SSE format: "data: {...}" or "data: [DONE]"
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]  # Strip "data: " prefix
+                if payload.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json_module.loads(payload)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content
+                except (json_module.JSONDecodeError, IndexError, KeyError):
+                    continue
+
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def close(self) -> None:

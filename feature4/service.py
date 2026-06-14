@@ -682,7 +682,11 @@ class BulkAssignmentService:
                 # Extract updated values from response
                 tier_queue = updated.get("tierQueue")
                 tq_name = tier_queue.get("name") if isinstance(tier_queue, dict) else None
-                updated_priority = updated.get("priority")
+                raw_priority = updated.get("priority")
+                if isinstance(raw_priority, dict):
+                    updated_priority = raw_priority.get("name") or raw_priority.get("id")
+                else:
+                    updated_priority = raw_priority
 
                 results.append(
                     TicketAssignResult(

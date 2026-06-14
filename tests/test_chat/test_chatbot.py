@@ -6,12 +6,14 @@ Tests the RAG pipeline with mocked Databricks client:
 - Session management (create, continue, reset, history)
 - Context building and source citations
 - Conversation history in LLM messages
+- Ticket detection and fetching
 """
 
 import pytest
+from unittest.mock import AsyncMock
 
 from src.models.chat import MessageRole, SourceType
-from src.services.chatbot import ChatbotService
+from src.services.chatbot import ChatbotService, TICKET_ID_PATTERN
 
 
 # ── Chat Flow ─────────────────────────────────────────────────────────
@@ -429,3 +431,626 @@ async def test_llm_messages_include_context(
     system_content = messages[0]["content"]
     assert "HP LaserJet Troubleshooting" in system_content
     assert "KNOWLEDGE BASE DOCUMENTATION" in system_content
+
+
+# ── Ticket Detection & Fetching ───────────────────────────────────────
+
+
+def test_ticket_id_regex_matches_ir():
+    """Regex should match IR ticket IDs."""
+    matches = TICKET_ID_PATTERN.findall("What about IR10419292?")
+    assert len(matches) == 1
+
+
+def test_ticket_id_regex_matches_sr():
+    """Regex should match SR ticket IDs."""
+    matches = TICKET_ID_PATTERN.findall("Check SR1234567 please")
+    assert len(matches) == 1
+
+
+def test_ticket_id_regex_matches_multiple():
+    """Regex should match multiple ticket IDs in one message."""
+    import re
+    matches = list(re.finditer(TICKET_ID_PATTERN, "Compare IR10419292 and SR9876543"))
+    assert len(matches) == 2
+    assert matches[0].group(0).upper() == "IR10419292"
+    assert matches[1].group(0).upper() == "SR9876543"
+
+
+def test_ticket_id_regex_case_insensitive():
+    """Regex should match regardless of case."""
+    matches = TICKET_ID_PATTERN.findall("look at ir10419292")
+    assert len(matches) == 1
+
+
+def test_ticket_id_regex_no_match_short():
+    """Regex should NOT match IDs with fewer than 5 digits."""
+    matches = TICKET_ID_PATTERN.findall("IR1234 is too short")
+    assert len(matches) == 0
+
+
+def test_ticket_id_regex_no_match_no_prefix():
+    """Regex should NOT match bare numbers without IR/SR prefix."""
+    matches = TICKET_ID_PATTERN.findall("ticket 10419292")
+    assert len(matches) == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_fetches_referenced_ticket(
+    mock_databricks_client,
+    mock_athena_client,
+    sample_athena_ticket,
+):
+    """Chat should fetch ticket data when a ticket ID is mentioned."""
+    mock_athena_client.get_ticket.return_value = sample_athena_ticket
+
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=mock_athena_client,
+    )
+
+    result = await service.chat(message="What should I do with IR1959493?")
+
+    mock_athena_client.get_ticket.assert_called_once_with("IR1959493")
+
+    # LLM context should include the ticket data
+    llm_messages = mock_databricks_client.call_llm.call_args[0][0]
+    system_content = llm_messages[0]["content"]
+    assert "REFERENCED TICKET DATA" in system_content
+    assert "IR1959493" in system_content
+    assert "Printer not working on 3rd floor" in system_content
+
+
+@pytest.mark.asyncio
+async def test_chat_referenced_ticket_in_sources(
+    mock_databricks_client,
+    mock_athena_client,
+    sample_athena_ticket,
+):
+    """Referenced tickets should appear in source citations."""
+    mock_athena_client.get_ticket.return_value = sample_athena_ticket
+
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=mock_athena_client,
+    )
+
+    result = await service.chat(message="Help with IR1959493")
+
+    ref_sources = [s for s in result.sources if "(referenced)" in s.title]
+    assert len(ref_sources) == 1
+    assert "IR1959493" in ref_sources[0].title
+    assert ref_sources[0].similarity == 1.0
+
+
+@pytest.mark.asyncio
+async def test_chat_ticket_not_found_handled_gracefully(
+    mock_databricks_client,
+    mock_athena_client,
+):
+    """Chat should handle ticket not found gracefully."""
+    mock_athena_client.get_ticket.return_value = None
+
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=mock_athena_client,
+    )
+
+    result = await service.chat(message="What about IR9999999?")
+
+    # Should still get a response (LLM still called)
+    mock_databricks_client.call_llm.assert_called_once()
+
+    # Context should mention not found
+    llm_messages = mock_databricks_client.call_llm.call_args[0][0]
+    system_content = llm_messages[0]["content"]
+    assert "NOT FOUND" in system_content
+
+
+@pytest.mark.asyncio
+async def test_chat_no_athena_client_skips_fetch(
+    mock_databricks_client,
+):
+    """Without an Athena client, ticket detection is skipped."""
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=None,
+    )
+
+    result = await service.chat(message="What about IR1959493?")
+
+    # Should still work, just no ticket data in context
+    mock_databricks_client.call_llm.assert_called_once()
+    llm_messages = mock_databricks_client.call_llm.call_args[0][0]
+    system_content = llm_messages[0]["content"]
+    assert "REFERENCED TICKET DATA" not in system_content
+
+
+@pytest.mark.asyncio
+async def test_chat_no_ticket_in_message_skips_fetch(
+    mock_databricks_client,
+    mock_athena_client,
+):
+    """Messages without ticket IDs should not trigger Athena fetch."""
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=mock_athena_client,
+    )
+
+    await service.chat(message="How do I reset a password?")
+
+    mock_athena_client.get_ticket.assert_not_called()
+
+
+def test_build_context_with_referenced_ticket(sample_athena_ticket):
+    """_build_context should include referenced ticket data at the top."""
+    context = ChatbotService._build_context("", [], [], [sample_athena_ticket])
+
+    assert "REFERENCED TICKET DATA" in context
+    assert "IR1959493" in context
+    assert "Printer not working on 3rd floor" in context
+    assert "Active" in context
+
+
+def test_build_context_referenced_ticket_not_found():
+    """_build_context should handle not-found tickets."""
+    not_found = {"id": "IR9999999", "_not_found": True}
+    context = ChatbotService._build_context("", [], [], [not_found])
+
+    assert "NOT FOUND" in context
+    assert "IR9999999" in context
+
+
+def test_format_ticket_truncates_long_description():
+    """Long descriptions should be truncated to 500 chars."""
+    ticket = {
+        "id": "IR1234567",
+        "title": "Test",
+        "description": "A" * 600,
+    }
+    formatted = ChatbotService._format_ticket_for_context(ticket)
+
+    assert "..." in formatted
+    # Description line should be truncated
+    desc_line = [l for l in formatted.split("\n") if l.startswith("Description:")][0]
+    assert len(desc_line) < 520  # "Description: " + 500 + "..."
+
+
+# ── Smart Skip Logic ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_chat_skips_sql_when_graph_has_context(
+    mock_databricks_client,
+):
+    """When KG has sufficient context, SQL similarity searches should be skipped entirely."""
+    from unittest.mock import MagicMock, patch
+    from src.services.knowledge_graph import KnowledgeGraphService
+
+    mock_kg = MagicMock(spec=KnowledgeGraphService)
+    mock_kg.is_available = True
+    mock_kg.query_for_chat.return_value = {
+        "facts": [
+            {"type": "Escalation", "condition": "test", "target_team": "EUS"},
+            {"type": "PriorityRule", "condition": "test", "priority": "2"},
+            {"type": "CallCapture", "scenario": "test", "required_fields": "[]"},
+        ],
+        "systems_matched": ["PennChart"],
+        "procedures_matched": [],
+        "has_sufficient_context": True,
+    }
+    mock_kg.format_facts_for_llm.return_value = "=== STRUCTURED KNOWLEDGE ===\nTest facts"
+
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        knowledge_graph_service=mock_kg,
+    )
+
+    await service.chat(message="How do I handle PennChart issues?")
+
+    # Embedding should NOT be generated (skipped entirely)
+    mock_databricks_client.generate_embedding.assert_not_called()
+    # SQL searches should NOT be called
+    mock_databricks_client.find_similar_documentation.assert_not_called()
+    mock_databricks_client.find_similar_by_embedding.assert_not_called()
+    # LLM should still be called
+    mock_databricks_client.call_llm.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_chat_skips_sql_when_referenced_ticket_found(
+    mock_databricks_client,
+    mock_athena_client,
+    sample_athena_ticket,
+):
+    """When a referenced ticket is fetched, SQL ticket search should be skipped."""
+    mock_athena_client.get_ticket.return_value = sample_athena_ticket
+
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=mock_athena_client,
+    )
+
+    await service.chat(message="What should I do with IR1959493?")
+
+    # Ticket similarity search should be skipped (we have the referenced ticket)
+    mock_databricks_client.find_similar_by_embedding.assert_not_called()
+    # But doc search still runs (no KG context)
+    mock_databricks_client.find_similar_documentation.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_chat_runs_full_search_when_no_context(
+    mock_databricks_client,
+):
+    """Without KG context or referenced tickets, full SQL search should run."""
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=None,
+    )
+
+    await service.chat(message="random question with no context")
+
+    # Both searches should run
+    mock_databricks_client.generate_embedding.assert_called_once()
+    mock_databricks_client.find_similar_documentation.assert_called_once()
+    mock_databricks_client.find_similar_by_embedding.assert_called_once()
+
+
+# ── Streaming ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_yields_events(
+    mock_databricks_client,
+):
+    """chat_stream should yield sources, tokens, and done events."""
+
+    # Mock the streaming LLM to yield chunks
+    async def mock_stream(*args, **kwargs):
+        for chunk in ["Hello", " world", "!"]:
+            yield chunk
+
+    mock_databricks_client.call_llm_stream = mock_stream
+
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+        athena_client=None,
+    )
+
+    events = []
+    async for event in service.chat_stream(message="test streaming"):
+        events.append(event)
+
+    # Separate progress events from non-progress events
+    progress_events = [e for e in events if e["event"] == "progress"]
+    non_progress_events = [e for e in events if e["event"] != "progress"]
+
+    # Should have progress events (at least step 1 running/done + steps 2-5)
+    assert len(progress_events) >= 5  # At minimum: step1 running, step1 done, step2-4 skipped/done, step5 running
+
+    # Non-progress events: sources + 3 tokens + done = 5 events
+    assert len(non_progress_events) == 5
+
+    # First non-progress event is sources
+    assert non_progress_events[0]["event"] == "sources"
+    assert "session_id" in non_progress_events[0]
+
+    # Middle events are tokens
+    assert non_progress_events[1]["event"] == "token"
+    assert non_progress_events[1]["data"] == "Hello"
+    assert non_progress_events[2]["event"] == "token"
+    assert non_progress_events[2]["data"] == " world"
+    assert non_progress_events[3]["event"] == "token"
+    assert non_progress_events[3]["data"] == "!"
+
+    # Last event is done
+    assert non_progress_events[4]["event"] == "done"
+    assert non_progress_events[4]["data"]["full_text"] == "Hello world!"
+    assert "session_id" in non_progress_events[4]["data"]
+
+    # Verify progress events have correct structure
+    for pe in progress_events:
+        assert "step" in pe["data"]
+        assert "total" in pe["data"]
+        assert "label" in pe["data"]
+        assert "status" in pe["data"]
+        assert pe["data"]["status"] in ("running", "done", "skipped")
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_records_session_history(
+    mock_databricks_client,
+):
+    """chat_stream should record messages in session history."""
+
+    async def mock_stream(*args, **kwargs):
+        yield "Response text"
+
+    mock_databricks_client.call_llm_stream = mock_stream
+
+    service = ChatbotService(
+        databricks_client=mock_databricks_client,
+    )
+
+    session_id = "stream-session"
+    async for _ in service.chat_stream(message="Hello", session_id=session_id):
+        pass
+
+    history = service.get_history(session_id)
+    assert len(history.messages) == 2
+    assert history.messages[0].role.value == "user"
+    assert history.messages[0].content == "Hello"
+    assert history.messages[1].role.value == "assistant"
+    assert history.messages[1].content == "Response text"
+
+
+# ── Classifier Integration Tests ──────────────────────────────────────
+
+
+class TestClassifierIntegration:
+    """Tests for the TF-IDF classifier integration in the chatbot."""
+
+    def _make_mock_classifier(self):
+        """Create a mock TicketClassifier."""
+        from unittest.mock import MagicMock
+        classifier = MagicMock()
+        classifier.predict.return_value = [
+            {"support_group": "EUS\\HUP", "confidence": 0.75},
+            {"support_group": "EUS\\Campus", "confidence": 0.12},
+            {"support_group": "Service Desk", "confidence": 0.05},
+        ]
+        return classifier
+
+    @pytest.mark.asyncio
+    async def test_classifier_runs_when_ticket_referenced(
+        self, mock_databricks_client, mock_athena_client
+    ):
+        """Classifier should run when a ticket ID is detected and fetched."""
+        mock_athena_client.get_ticket.return_value = {
+            "id": "IR1959493",
+            "title": "Printer not working",
+            "description": "HP LaserJet on 3rd floor not printing",
+            "location": {"name": "HUP"},
+            "classificationPath": "Hardware",
+            "source": "Phone",
+        }
+
+        classifier = self._make_mock_classifier()
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            athena_client=mock_athena_client,
+            ticket_classifier=classifier,
+        )
+
+        await service.chat(message="What group should IR1959493 be assigned to?")
+
+        classifier.predict.assert_called_once()
+        call_kwargs = classifier.predict.call_args[1]
+        assert call_kwargs["title"] == "Printer not working"
+        assert call_kwargs["ticket_type"] == "Incident"
+
+    @pytest.mark.asyncio
+    async def test_classifier_not_called_without_ticket(
+        self, mock_databricks_client
+    ):
+        """Classifier should NOT run when no ticket IDs are in the message."""
+        classifier = self._make_mock_classifier()
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            ticket_classifier=classifier,
+        )
+
+        await service.chat(message="How do I reset a password?")
+
+        classifier.predict.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classifier_results_in_context(
+        self, mock_databricks_client, mock_athena_client
+    ):
+        """Classifier predictions should appear in the LLM context."""
+        mock_athena_client.get_ticket.return_value = {
+            "id": "IR1959493",
+            "title": "Printer not working",
+            "description": "HP LaserJet on 3rd floor not printing",
+            "location": {"name": "HUP"},
+            "classificationPath": "Hardware",
+            "source": "Phone",
+        }
+
+        classifier = self._make_mock_classifier()
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            athena_client=mock_athena_client,
+            ticket_classifier=classifier,
+        )
+
+        await service.chat(message="What group should IR1959493 be assigned to?")
+
+        # Check that the LLM was called with context containing classifier predictions
+        llm_call_args = mock_databricks_client.call_llm.call_args[0][0]
+        system_msg = llm_call_args[0]["content"]
+        assert "CLASSIFIER PREDICTIONS" in system_msg
+        assert "EUS\\HUP" in system_msg
+        assert "75.0%" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_classifier_handles_sr_tickets(
+        self, mock_databricks_client, mock_athena_client
+    ):
+        """Classifier should use SR support groups for SR tickets."""
+        mock_athena_client.get_ticket.return_value = {
+            "id": "SR2045678",
+            "title": "New laptop request",
+            "description": "User needs a new laptop for remote work",
+            "location": {"name": "Campus"},
+            "classificationPath": "Hardware Request",
+            "source": "Web Portal",
+        }
+
+        classifier = self._make_mock_classifier()
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            athena_client=mock_athena_client,
+            ticket_classifier=classifier,
+        )
+
+        await service.chat(message="Where should SR2045678 go?")
+
+        call_kwargs = classifier.predict.call_args[1]
+        assert call_kwargs["ticket_type"] == "Service Request"
+
+    @pytest.mark.asyncio
+    async def test_classifier_skips_not_found_tickets(
+        self, mock_databricks_client, mock_athena_client
+    ):
+        """Classifier should skip tickets that weren't found in Athena."""
+        mock_athena_client.get_ticket.return_value = None
+
+        classifier = self._make_mock_classifier()
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            athena_client=mock_athena_client,
+            ticket_classifier=classifier,
+        )
+
+        await service.chat(message="What about IR9999999?")
+
+        classifier.predict.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classifier_triage_rule_takes_priority(
+        self, mock_databricks_client, mock_athena_client
+    ):
+        """Triage rules should take priority over the classifier."""
+        mock_athena_client.get_ticket.return_value = {
+            "id": "IR1959493",
+            "title": "Password reset needed",
+            "description": "User account locked, needs password reset",
+            "location": {"name": "HUP"},
+            "classificationPath": "Access",
+            "source": "Phone",
+        }
+
+        classifier = self._make_mock_classifier()
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            athena_client=mock_athena_client,
+            ticket_classifier=classifier,
+        )
+
+        await service.chat(message="Assign IR1959493")
+
+        # Classifier predict should NOT be called because triage rule matches first
+        classifier.predict.assert_not_called()
+
+        # But the context should still have a prediction (from triage rule)
+        llm_call_args = mock_databricks_client.call_llm.call_args[0][0]
+        system_msg = llm_call_args[0]["content"]
+        assert "CLASSIFIER PREDICTIONS" in system_msg
+        assert "Service Desk" in system_msg
+        assert "triage_rule" in system_msg
+
+    @pytest.mark.asyncio
+    async def test_classifier_no_classifier_instance(
+        self, mock_databricks_client, mock_athena_client
+    ):
+        """Service should work fine without a classifier (backward compatible)."""
+        mock_athena_client.get_ticket.return_value = {
+            "id": "IR1959493",
+            "title": "Printer not working",
+            "description": "HP LaserJet on 3rd floor not printing",
+            "location": {"name": "HUP"},
+        }
+
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            athena_client=mock_athena_client,
+            ticket_classifier=None,  # No classifier
+        )
+
+        response = await service.chat(message="What about IR1959493?")
+
+        # Should still work, just without classifier predictions
+        assert response.message is not None
+        llm_call_args = mock_databricks_client.call_llm.call_args[0][0]
+        system_msg = llm_call_args[0]["content"]
+        assert "CLASSIFIER PREDICTIONS" not in system_msg
+
+    def test_format_classifier_results_empty(self):
+        """Formatting empty results should return empty string."""
+        result = ChatbotService._format_classifier_results_for_context([])
+        assert result == ""
+
+    def test_format_classifier_results_with_data(self):
+        """Formatting should produce readable context block."""
+        results = [
+            {
+                "ticket_id": "IR1959493",
+                "method": "classifier",
+                "support_group": "EUS\\HUP",
+                "support_group_guid": "some-guid-123",
+                "confidence": 0.85,
+                "alternatives": [
+                    {"support_group": "EUS\\Campus", "confidence": 0.08},
+                ],
+            }
+        ]
+        formatted = ChatbotService._format_classifier_results_for_context(results)
+
+        assert "CLASSIFIER PREDICTIONS" in formatted
+        assert "IR1959493" in formatted
+        assert "EUS\\HUP" in formatted
+        assert "85.0%" in formatted
+        assert "some-guid-123" in formatted
+        assert "EUS\\Campus" in formatted
+
+    def test_format_classifier_results_triage_rule(self):
+        """Triage rule results should show method correctly."""
+        results = [
+            {
+                "ticket_id": "IR1959493",
+                "method": "triage_rule",
+                "support_group": "Service Desk",
+                "support_group_guid": "sd-guid",
+                "confidence": 1.0,
+                "alternatives": [],
+            }
+        ]
+        formatted = ChatbotService._format_classifier_results_for_context(results)
+
+        assert "triage_rule" in formatted
+        assert "100.0%" in formatted
+        assert "Service Desk" in formatted
+
+    @pytest.mark.asyncio
+    async def test_classifier_multiple_tickets(
+        self, mock_databricks_client, mock_athena_client
+    ):
+        """Classifier should run for each unique ticket ID in the message."""
+        call_count = 0
+
+        async def mock_get_ticket(ticket_id):
+            return {
+                "id": ticket_id,
+                "title": f"Issue for {ticket_id}",
+                "description": "Some issue",
+                "location": {"name": "HUP"},
+                "classificationPath": "Hardware",
+                "source": "Phone",
+            }
+
+        mock_athena_client.get_ticket = mock_get_ticket
+
+        classifier = self._make_mock_classifier()
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            athena_client=mock_athena_client,
+            ticket_classifier=classifier,
+        )
+
+        await service.chat(message="Compare IR1959493 and IR2045678")
+
+        # Classifier should be called twice (once per ticket)
+        assert classifier.predict.call_count == 2

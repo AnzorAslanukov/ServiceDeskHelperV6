@@ -1269,6 +1269,16 @@ function bulkSelectAlternative(ticketId, altIndex) {
         tmp.innerHTML = _renderRecRow(ticketId);
         recRow.replaceWith(tmp.firstElementChild);
     }
+
+    // Also update the support group dropdown in the detail row (manual assign form)
+    var sgToggle = document.getElementById('sgToggle_' + ticketId);
+    if (sgToggle) {
+        var textSpan = sgToggle.querySelector('.sg-dropdown-toggle-text');
+        if (textSpan) textSpan.textContent = alt.support_group;
+        sgToggle.classList.add('sg-dropdown-has-value');
+    }
+    var sgGuidInput = document.getElementById('sgGuid_' + ticketId);
+    if (sgGuidInput) sgGuidInput.value = guid;
 }
 
 function _updateTicketRow(ticketId) {
