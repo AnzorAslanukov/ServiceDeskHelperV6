@@ -489,17 +489,20 @@ async def test_assign_tickets_calls_athena_correctly(
             ticket_id="IR10001",
             entity_id="eid-ir-10001",
             tier_queue_guid="ae9eb3ff-458a-206f-7815-129d50efa285",
+            tier_queue_name="EUS",
             priority=3,
+            method="classifier",
         ),
     ]
 
-    await bulk_assignment_service.assign_tickets(assignments)
+    await bulk_assignment_service.assign_tickets(assignments, user_id="testuser")
 
     mock_athena_client.update_ticket.assert_called_once_with(
         ticket_id="IR10001",
         entity_id="eid-ir-10001",
         tier_queue_guid="ae9eb3ff-458a-206f-7815-129d50efa285",
         priority=3,
+        user_input="Assigned to EUS by testuser via Service Desk Helper (AI classifier recommendation).",
     )
 
 
@@ -573,17 +576,20 @@ async def test_assign_without_priority(
             ticket_id="IR10001",
             entity_id="eid-1",
             tier_queue_guid="guid-1",
+            tier_queue_name="EUS",
             priority=None,
+            method="manual",
         ),
     ]
 
-    await bulk_assignment_service.assign_tickets(assignments)
+    await bulk_assignment_service.assign_tickets(assignments, user_id="testuser")
 
     mock_athena_client.update_ticket.assert_called_once_with(
         ticket_id="IR10001",
         entity_id="eid-1",
         tier_queue_guid="guid-1",
         priority=None,
+        user_input="Assigned to EUS by testuser via Service Desk Helper (manual selection).",
     )
 
 

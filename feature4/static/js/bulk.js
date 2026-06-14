@@ -582,7 +582,8 @@ function bulkGetRecommendations() {
                 _bulkOverrides[rec.ticket_id] = {
                     tier_queue_guid: rec.recommendation.support_group_guid,
                     tier_queue_name: rec.recommendation.support_group_name,
-                    priority: rec.recommendation.priority
+                    priority: rec.recommendation.priority,
+                    method: 'classifier'
                 };
             }
         });
@@ -627,7 +628,8 @@ function bulkAssignSelected() {
             entity_id: ticket.entity_id,
             tier_queue_guid: override.tier_queue_guid,
             tier_queue_name: override.tier_queue_name || '',
-            priority: override.priority || null
+            priority: override.priority || null,
+            method: override.method || 'manual'
         });
     });
 
@@ -1763,7 +1765,8 @@ function bulkManualAssign(ticketId) {
         entity_id: ticket.entity_id,
         tier_queue_guid: override.tier_queue_guid,
         tier_queue_name: override.tier_queue_name || '',
-        priority: override.priority || null
+        priority: override.priority || null,
+        method: override.method || 'manual'
     };
 
     fetch('/bulk/assign', {

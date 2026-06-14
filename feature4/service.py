@@ -653,15 +653,19 @@ class BulkAssignmentService:
     async def assign_tickets(
         self,
         assignments: list[TicketAssignment],
+        user_id: str = "",
     ) -> BulkAssignResponse:
         """
         Assign a batch of tickets by updating them in Athena.
 
         For each assignment, calls AthenaClient.update_ticket() with
-        the tier queue GUID and optional priority.
+        the tier queue GUID, optional priority, and an assignment comment
+        noting who assigned the ticket, the method used, and that it was
+        done via Service Desk Helper.
 
         Args:
             assignments: List of TicketAssignment objects with ticket details.
+            user_id: User ID performing the assignments (for comment attribution).
 
         Returns:
             BulkAssignResponse with per-ticket results.
@@ -672,11 +676,24 @@ class BulkAssignmentService:
 
         for assignment in assignments:
             try:
+                # Build assignment comment
+                method_label = (
+                    "AI classifier recommendation"
+                    if assignment.method == "classifier"
+                    else "manual selection"
+                )
+                group_name = assignment.tier_queue_name or "unknown group"
+                comment = (
+                    f"Assigned to {group_name} by {user_id} "
+                    f"via Service Desk Helper ({method_label})."
+                )
+
                 updated = await self._athena.update_ticket(
                     ticket_id=assignment.ticket_id,
                     entity_id=assignment.entity_id,
                     tier_queue_guid=assignment.tier_queue_guid,
                     priority=assignment.priority,
+                    user_input=comment,
                 )
 
                 # Extract updated values from response

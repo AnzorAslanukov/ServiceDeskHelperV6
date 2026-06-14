@@ -399,6 +399,7 @@ class AthenaClient:
         entity_id: str,
         tier_queue_guid: str | None = None,
         priority: int | str | None = None,
+        user_input: str | None = None,
     ) -> dict[str, Any]:
         """
         Update an incident via PUT /v1/incident/.
@@ -410,6 +411,7 @@ class AthenaClient:
             entity_id: The ticket's entityId GUID (required by Athena).
             tier_queue_guid: GUID of the target support group/tier queue.
             priority: Priority level (int for IR, e.g., 3).
+            user_input: Comment/note text to add to the ticket's userInput field.
 
         Returns:
             Updated incident data from Athena.
@@ -422,6 +424,8 @@ class AthenaClient:
             payload["tierQueue"] = {"id": tier_queue_guid}
         if priority is not None:
             payload["priority"] = priority
+        if user_input is not None:
+            payload["userInput"] = user_input
 
         response = await client.put(
             self._settings.athena_incident_url,
@@ -436,6 +440,7 @@ class AthenaClient:
         entity_id: str,
         tier_queue_guid: str | None = None,
         priority: int | str | None = None,
+        user_input: str | None = None,
     ) -> dict[str, Any]:
         """
         Update a service request via PUT /v1/servicerequest/.
@@ -444,6 +449,7 @@ class AthenaClient:
             entity_id: The ticket's entityId GUID (required by Athena).
             tier_queue_guid: GUID of the target support group/tier queue.
             priority: Priority level (string for SR, e.g., 'Medium').
+            user_input: Comment/note text to add to the ticket's userInput field.
 
         Returns:
             Updated service request data from Athena.
@@ -456,6 +462,8 @@ class AthenaClient:
             payload["supportGroup"] = {"id": tier_queue_guid}
         if priority is not None:
             payload["priority"] = priority
+        if user_input is not None:
+            payload["userInput"] = user_input
 
         response = await client.put(
             self._settings.athena_servicerequest_url,
@@ -471,6 +479,7 @@ class AthenaClient:
         entity_id: str,
         tier_queue_guid: str | None = None,
         priority: int | str | None = None,
+        user_input: str | None = None,
     ) -> dict[str, Any]:
         """
         Update a ticket, auto-detecting type from the ID prefix.
@@ -480,14 +489,15 @@ class AthenaClient:
             entity_id: The ticket's entityId GUID (required by Athena PUT).
             tier_queue_guid: GUID of the target support group/tier queue.
             priority: Priority level.
+            user_input: Comment/note text to add to the ticket's userInput field.
 
         Returns:
             Updated ticket data from Athena.
         """
         if ticket_id.upper().startswith("IR"):
-            return await self.update_incident(entity_id, tier_queue_guid, priority)
+            return await self.update_incident(entity_id, tier_queue_guid, priority, user_input)
         elif ticket_id.upper().startswith("SR"):
-            return await self.update_service_request(entity_id, tier_queue_guid, priority)
+            return await self.update_service_request(entity_id, tier_queue_guid, priority, user_input)
         else:
             raise ValueError(f"Unknown ticket type prefix in '{ticket_id}'. Expected IR or SR.")
 
