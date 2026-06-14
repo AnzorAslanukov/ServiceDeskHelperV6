@@ -392,6 +392,36 @@ class AthenaClient:
             }
         ]
 
+    # ── Comments ───────────────────────────────────────────────────────
+
+    async def add_comment(
+        self,
+        entity_id: str,
+        comment: str,
+    ) -> dict[str, Any]:
+        """
+        Add an analyst comment to a ticket via POST /v1/workitem/{entityId}/comment.
+
+        This creates a visible analyst comment entry in the ticket's comment
+        history (analystComments array), attributed to the authenticated API user.
+
+        Args:
+            entity_id: The ticket's entityId GUID.
+            comment: The comment text to add.
+
+        Returns:
+            Updated ticket data from Athena (includes the new comment in analystComments).
+        """
+        client = await self._get_http_client()
+        headers = await self._auth_headers()
+
+        url = f"{self._settings.athena_base_url}v1/workitem/{entity_id}/comment"
+        payload = {"comment": comment}
+
+        response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return response.json()
+
     # ── Ticket Updates ─────────────────────────────────────────────────
 
     async def update_incident(

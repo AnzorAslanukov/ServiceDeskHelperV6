@@ -676,7 +676,14 @@ class BulkAssignmentService:
 
         for assignment in assignments:
             try:
-                # Build assignment comment
+                updated = await self._athena.update_ticket(
+                    ticket_id=assignment.ticket_id,
+                    entity_id=assignment.entity_id,
+                    tier_queue_guid=assignment.tier_queue_guid,
+                    priority=assignment.priority,
+                )
+
+                # Add visible analyst comment after successful assignment
                 method_label = (
                     "AI classifier recommendation"
                     if assignment.method == "classifier"
@@ -687,14 +694,18 @@ class BulkAssignmentService:
                     f"Assigned to {group_name} by {user_id} "
                     f"via Service Desk Helper ({method_label})."
                 )
-
-                updated = await self._athena.update_ticket(
-                    ticket_id=assignment.ticket_id,
-                    entity_id=assignment.entity_id,
-                    tier_queue_guid=assignment.tier_queue_guid,
-                    priority=assignment.priority,
-                    user_input=comment,
-                )
+                try:
+                    await self._athena.add_comment(
+                        entity_id=assignment.entity_id,
+                        comment=comment,
+                    )
+                except Exception as comment_exc:
+                    # Log but don't fail the assignment if comment fails
+                    logger.warning(
+                        "Comment failed for %s (assignment succeeded): %s",
+                        assignment.ticket_id,
+                        comment_exc,
+                    )
 
                 # Extract updated values from response
                 tier_queue = updated.get("tierQueue")
