@@ -377,7 +377,7 @@ async def bulk_assign(
     For each successful assignment, broadcasts an ASSIGN event
     so all connected clients know the ticket has been removed from the queue.
     """
-    result = await service.assign_tickets(request.assignments, user_id=request.user_id)
+    result = await service.assign_tickets(request.assignments)
 
     # Broadcast assign events for successful assignments
     for r in result.results:

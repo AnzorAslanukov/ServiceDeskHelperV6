@@ -653,19 +653,15 @@ class BulkAssignmentService:
     async def assign_tickets(
         self,
         assignments: list[TicketAssignment],
-        user_id: str = "",
     ) -> BulkAssignResponse:
         """
         Assign a batch of tickets by updating them in Athena.
 
         For each assignment, calls AthenaClient.update_ticket() with
-        the tier queue GUID, optional priority, and an assignment comment
-        noting who assigned the ticket, the method used, and that it was
-        done via Service Desk Helper.
+        the tier queue GUID and optional priority.
 
         Args:
             assignments: List of TicketAssignment objects with ticket details.
-            user_id: User ID performing the assignments (for comment attribution).
 
         Returns:
             BulkAssignResponse with per-ticket results.
@@ -682,30 +678,6 @@ class BulkAssignmentService:
                     tier_queue_guid=assignment.tier_queue_guid,
                     priority=assignment.priority,
                 )
-
-                # Add visible analyst comment after successful assignment
-                method_label = (
-                    "AI classifier recommendation"
-                    if assignment.method == "classifier"
-                    else "manual selection"
-                )
-                group_name = assignment.tier_queue_name or "unknown group"
-                comment = (
-                    f"Assigned to {group_name} by {user_id} "
-                    f"via Service Desk Helper ({method_label})."
-                )
-                try:
-                    await self._athena.add_comment(
-                        entity_id=assignment.entity_id,
-                        comment=comment,
-                    )
-                except Exception as comment_exc:
-                    # Log but don't fail the assignment if comment fails
-                    logger.warning(
-                        "Comment failed for %s (assignment succeeded): %s",
-                        assignment.ticket_id,
-                        comment_exc,
-                    )
 
                 # Extract updated values from response
                 tier_queue = updated.get("tierQueue")

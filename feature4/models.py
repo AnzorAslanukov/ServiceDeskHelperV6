@@ -183,10 +183,6 @@ class TicketAssignment(BaseModel):
         default=None,
         description="Priority to set. None means don't change priority.",
     )
-    method: str = Field(
-        default="manual",
-        description="Assignment method: 'classifier' (AI recommendation) or 'manual' (user-selected).",
-    )
 
 
 class BulkAssignRequest(BaseModel):
