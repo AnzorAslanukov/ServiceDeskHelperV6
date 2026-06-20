@@ -580,6 +580,7 @@ class BulkAssignmentService:
         ticket_ids: list[str],
         on_processing: Callable[[str, int, int], Awaitable[None]] | None = None,
         on_result: Callable[[str, bool, int, int], Awaitable[None]] | None = None,
+        use_triage: bool = True,
     ) -> BulkRecommendResponse:
         """
         Generate classifier recommendations for a batch of tickets.
@@ -593,6 +594,9 @@ class BulkAssignmentService:
                 called before each ticket starts processing.
             on_result: Optional async callback(ticket_id, success, current, total)
                 called after each ticket finishes processing.
+            use_triage: Whether to apply triage rules before the classifier.
+                When False, only the TF-IDF classifier is used. This is a
+                per-user setting passed through from the request.
 
         Returns:
             BulkRecommendResponse with per-ticket recommendations.
@@ -611,6 +615,7 @@ class BulkAssignmentService:
             try:
                 result = await self._assignment.recommend_assignment(
                     ticket_id=ticket_id,
+                    use_triage=use_triage,
                 )
                 recommendations.append(
                     TicketRecommendation(

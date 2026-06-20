@@ -646,6 +646,64 @@
     to { opacity: 1; transform: translateX(0); }
 }
 
+/* ── Triage Toggle Switch ──────────────────────────────────────────── */
+
+.bulk-triage-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    user-select: none;
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    vertical-align: middle;
+}
+
+.bulk-triage-toggle input[type="checkbox"] {
+    display: none;
+}
+
+.bulk-triage-slider {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    background-color: var(--bg-tertiary, #555);
+    border-radius: 10px;
+    transition: background-color 0.2s;
+    flex-shrink: 0;
+}
+
+.bulk-triage-slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background-color: #fff;
+    border-radius: 50%;
+    transition: transform 0.2s;
+}
+
+.bulk-triage-toggle input[type="checkbox"]:checked + .bulk-triage-slider {
+    background-color: var(--penn-accent, #4A90D9);
+}
+
+.bulk-triage-toggle input[type="checkbox"]:checked + .bulk-triage-slider::after {
+    transform: translateX(16px);
+}
+
+.bulk-triage-label {
+    font-weight: 500;
+    color: var(--text-secondary, #aaa);
+    white-space: nowrap;
+}
+
+.bulk-triage-toggle input[type="checkbox"]:checked ~ .bulk-triage-label {
+    color: var(--penn-accent, #4A90D9);
+}
+
 /* ── Settings Panel ────────────────────────────────────────────────── */
 
 .bulk-settings-panel {

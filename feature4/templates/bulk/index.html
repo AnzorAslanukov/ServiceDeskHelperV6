@@ -54,6 +54,11 @@
             <button class="btn btn-warning" onclick="bulkGetRecommendations()" id="btnRecommend" disabled>
                 🤖 Get Recommendations
             </button>
+            <label class="bulk-triage-toggle" title="When ON, triage rules are applied before the classifier. When OFF, only the TF-IDF classifier is used.">
+                <input type="checkbox" id="bulkTriageCheckbox" checked onchange="bulkToggleTriage(this)">
+                <span class="bulk-triage-slider"></span>
+                <span class="bulk-triage-label" id="bulkTriageLabel">Triage Rules: ON</span>
+            </label>
             <button class="btn btn-success" onclick="bulkAssignSelected()" id="btnAssign" disabled>
                 ✅ Assign Selected
             </button>

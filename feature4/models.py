@@ -139,6 +139,14 @@ class BulkRecommendRequest(BaseModel):
         default=None,
         description="User ID who initiated the recommendation batch (for WebSocket progress events).",
     )
+    use_triage: bool = Field(
+        default=True,
+        description=(
+            "Whether to apply triage rules before the TF-IDF classifier. "
+            "When False, only the classifier is used for support group prediction. "
+            "This is a per-user setting that does not affect other users' recommendations."
+        ),
+    )
 
 
 class TicketRecommendation(BaseModel):

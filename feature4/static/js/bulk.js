@@ -14,6 +14,7 @@ var _bulkOverrides = {};      // ticket_id → { tier_queue_guid, tier_queue_nam
 var _bulkSelected = new Set();
 var _bulkBusy = false;
 var _bulkStreamingLoad = false;  // true while WebSocket streaming queue load is in progress
+var _bulkUseTriageRules = true;  // per-user toggle: when true, triage rules are applied before classifier
 var _bulkLockPending = new Set();  // ticket IDs with in-flight lock/unlock requests
 
 // Support group lists for manual assignment: ticket_type → [{name, guid}, ...]
@@ -567,6 +568,7 @@ function bulkGetRecommendations() {
         body: JSON.stringify({
             ticket_ids: ticketIds,
             user_id: _bulkUserId,
+            use_triage: _bulkUseTriageRules,
         })
     })
     .then(function (r) {
@@ -690,6 +692,21 @@ function bulkAssignSelected() {
 function bulkToggleSettings() {
     var panel = document.getElementById('bulkSettingsPanel');
     panel.style.display = panel.style.display === 'none' ? '' : 'none';
+}
+
+// ── Triage Rules Toggle ───────────────────────────────────────────────
+
+/**
+ * Toggle triage rules on/off for the current user's recommendations.
+ * When OFF, only the TF-IDF classifier is used (no triage rules).
+ * This is a per-user setting — does not affect other users.
+ */
+function bulkToggleTriage(checkbox) {
+    _bulkUseTriageRules = checkbox.checked;
+    var label = document.getElementById('bulkTriageLabel');
+    if (label) {
+        label.textContent = _bulkUseTriageRules ? 'Triage Rules: ON' : 'Triage Rules: OFF';
+    }
 }
 
 // ── Recommendation Progress Styling ───────────────────────────────────

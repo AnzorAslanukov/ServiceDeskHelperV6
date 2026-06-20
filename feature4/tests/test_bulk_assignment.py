@@ -1595,3 +1595,114 @@ async def test_cache_annotates_lock_state_on_streaming(
     ir10002 = next(t for t in streamed if t.id == "IR10002")
     assert ir10001.locked_by == "user_a"
     assert ir10002.locked_by is None
+
+
+# ── Triage Toggle Tests ───────────────────────────────────────────────
+
+
+def test_bulk_recommend_request_model_use_triage_default():
+    """BulkRecommendRequest.use_triage should default to True."""
+    from feature4.models import BulkRecommendRequest
+
+    req = BulkRecommendRequest(ticket_ids=["IR10001"], user_id="user_a")
+    assert req.use_triage is True
+
+
+def test_bulk_recommend_request_model_use_triage_false():
+    """BulkRecommendRequest should accept use_triage=False."""
+    from feature4.models import BulkRecommendRequest
+
+    req = BulkRecommendRequest(
+        ticket_ids=["IR10001"],
+        user_id="user_a",
+        use_triage=False,
+    )
+    assert req.use_triage is False
+
+
+def test_bulk_recommend_request_model_use_triage_true():
+    """BulkRecommendRequest should accept use_triage=True explicitly."""
+    from feature4.models import BulkRecommendRequest
+
+    req = BulkRecommendRequest(
+        ticket_ids=["IR10001", "IR10002"],
+        user_id="user_b",
+        use_triage=True,
+    )
+    assert req.use_triage is True
+
+
+@pytest.mark.asyncio
+async def test_batch_recommend_passes_use_triage_true(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+    sample_athena_ticket,
+):
+    """batch_recommend with use_triage=True should pass it to recommend_assignment."""
+    mock_athena_client.get_ticket.return_value = sample_athena_ticket
+
+    result = await bulk_assignment_service.batch_recommend(
+        ["IR1959493"], use_triage=True
+    )
+
+    assert result.total == 1
+    assert result.failed == 0
+    assert result.recommendations[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_batch_recommend_passes_use_triage_false(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+    sample_athena_ticket,
+):
+    """batch_recommend with use_triage=False should skip triage rules and use classifier only."""
+    mock_athena_client.get_ticket.return_value = sample_athena_ticket
+
+    result = await bulk_assignment_service.batch_recommend(
+        ["IR1959493"], use_triage=False
+    )
+
+    # Should still succeed — classifier handles the prediction
+    assert result.total == 1
+    assert result.failed == 0
+    assert result.recommendations[0].success is True
+    # Method should be 'classifier' since triage was disabled
+    assert result.recommendations[0].recommendation.method == "classifier"
+
+
+@pytest.mark.asyncio
+async def test_batch_recommend_use_triage_false_skips_triage_rule(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """When use_triage=False, a ticket that would match a triage rule should use classifier instead."""
+    # Create a ticket that would normally match the password_reset triage rule
+    triage_ticket = {
+        "id": "IR1234567",
+        "entityId": "eid-triage-test",
+        "title": "Password Reset Request",
+        "description": "User needs password reset for their account.",
+        "status": {"name": "Active", "id": "5e2d3932-ca6d-1515-7310-6f58584df73e"},
+        "priority": 3,
+        "tierQueue": {"name": "Validation", "id": "tq-guid-1"},
+        "affectedUser": {"displayName": "Test User", "userName": "testuser"},
+        "createdDate": "2026-04-14T10:00:00Z",
+        "location": {"name": "HUP"},
+    }
+    mock_athena_client.get_ticket.return_value = triage_ticket
+
+    # With triage OFF — should use classifier, not triage rule
+    result_no_triage = await bulk_assignment_service.batch_recommend(
+        ["IR1234567"], use_triage=False
+    )
+    assert result_no_triage.recommendations[0].success is True
+    assert result_no_triage.recommendations[0].recommendation.method == "classifier"
+
+    # With triage ON — should use triage rule (password reset → Service Desk)
+    result_with_triage = await bulk_assignment_service.batch_recommend(
+        ["IR1234567"], use_triage=True
+    )
+    assert result_with_triage.recommendations[0].success is True
+    assert result_with_triage.recommendations[0].recommendation.method == "triage_rule"
+    assert result_with_triage.recommendations[0].recommendation.support_group_name == "Service Desk"

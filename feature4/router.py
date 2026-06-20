@@ -328,6 +328,7 @@ async def bulk_recommend(
             ticket_ids=request.ticket_ids,
             on_processing=on_processing,
             on_result=on_result,
+            use_triage=request.use_triage,
         )
 
         # Broadcast rec_complete so all clients clear progress states
