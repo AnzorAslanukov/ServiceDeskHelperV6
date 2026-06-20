@@ -469,6 +469,7 @@ class AssignmentService:
         self,
         ticket_id: str,
         top_k: int = 5,
+        use_triage: bool = True,
     ) -> AssignmentResponse:
         """
         Analyze a ticket and recommend a support group assignment.
@@ -504,43 +505,44 @@ class AssignmentService:
         support_groups = IR_SUPPORT_GROUPS if ticket_type == "incident" else SR_SUPPORT_GROUPS
 
         # Step 3a: Check specific triage rules (Phase 2c-2f)
-        specific_match = check_specific_triage(
-            ticket_info.title or "",
-            ticket_info.description or "",
-            ticket_info.location or "",
-            support_groups,
-        )
-        if specific_match:
-            group_name, group_guid = specific_match
-            recommendation = AssignmentRecommendation(
-                support_group_name=group_name,
-                support_group_guid=group_guid,
-                confidence=1.0,
-                method="triage_rule",
-                alternatives=[],
+        if use_triage:
+            specific_match = check_specific_triage(
+                ticket_info.title or "",
+                ticket_info.description or "",
+                ticket_info.location or "",
+                support_groups,
             )
-            return AssignmentResponse(
-                ticket=ticket_info,
-                recommendation=recommendation,
-            )
+            if specific_match:
+                group_name, group_guid = specific_match
+                recommendation = AssignmentRecommendation(
+                    support_group_name=group_name,
+                    support_group_guid=group_guid,
+                    confidence=1.0,
+                    method="triage_rule",
+                    alternatives=[],
+                )
+                return AssignmentResponse(
+                    ticket=ticket_info,
+                    recommendation=recommendation,
+                )
 
-        # Step 3b: Check Service Desk triage rules
-        if check_service_desk_triage(
-            ticket_info.title or "",
-            ticket_info.description or "",
-        ):
-            sd_guid = support_groups.get("Service Desk", "")
-            recommendation = AssignmentRecommendation(
-                support_group_name="Service Desk",
-                support_group_guid=sd_guid,
-                confidence=1.0,
-                method="triage_rule",
-                alternatives=[],
-            )
-            return AssignmentResponse(
-                ticket=ticket_info,
-                recommendation=recommendation,
-            )
+            # Step 3b: Check Service Desk triage rules
+            if check_service_desk_triage(
+                ticket_info.title or "",
+                ticket_info.description or "",
+            ):
+                sd_guid = support_groups.get("Service Desk", "")
+                recommendation = AssignmentRecommendation(
+                    support_group_name="Service Desk",
+                    support_group_guid=sd_guid,
+                    confidence=1.0,
+                    method="triage_rule",
+                    alternatives=[],
+                )
+                return AssignmentResponse(
+                    ticket=ticket_info,
+                    recommendation=recommendation,
+                )
 
         # Step 4: Run TF-IDF classifier
         predictions = self._classifier.predict(

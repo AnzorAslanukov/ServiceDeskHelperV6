@@ -37,6 +37,19 @@
                         </button>
                     </div>
                 </div>
+                <!-- Triage Rules Toggle -->
+                <div class="assignment-toggle-row">
+                    <label class="toggle-switch" for="useTriageToggle">
+                        <input type="checkbox"
+                               id="useTriageToggle"
+                               name="use_triage"
+                               value="on"
+                               checked>
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-label">Use triage rules</span>
+                    <span class="toggle-hint" title="When enabled, known keyword patterns are matched before the classifier runs. Disable to always use the ML classifier.">ℹ️</span>
+                </div>
             </form>
             <div class="assignment-input-hint">
                 Enter an Incident (IR) or Service Request (SR) ticket ID to get a recommended support group. Case-insensitive — both <code>ir1234567</code> and <code>IR1234567</code> work.

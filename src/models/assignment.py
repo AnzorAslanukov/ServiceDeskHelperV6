@@ -19,6 +19,11 @@ class AssignmentRequest(BaseModel):
         le=20,
         description="Number of alternative predictions to return.",
     )
+    use_triage: bool = Field(
+        default=True,
+        description="Whether to apply triage rules before the classifier. "
+        "When False, the classifier is always used regardless of keyword matches.",
+    )
 
 
 # ── Response Models ───────────────────────────────────────────────────

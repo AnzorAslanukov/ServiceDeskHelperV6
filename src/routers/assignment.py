@@ -32,6 +32,7 @@ async def recommend_assignment(
         return await service.recommend_assignment(
             ticket_id=ticket_id,
             top_k=request.top_k,
+            use_triage=request.use_triage,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

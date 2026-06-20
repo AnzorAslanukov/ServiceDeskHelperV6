@@ -408,3 +408,98 @@ class TestModels:
         )
         assert resp.ticket.id == "IR1234567"
         assert resp.recommendation.support_group_name == "HUP"
+
+    def test_assignment_request_use_triage_default(self):
+        """use_triage defaults to True."""
+        req = AssignmentRequest()
+        assert req.use_triage is True
+
+    def test_assignment_request_use_triage_false(self):
+        """use_triage can be set to False."""
+        req = AssignmentRequest(use_triage=False)
+        assert req.use_triage is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# USE_TRIAGE TOGGLE TESTS
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestUseTriageToggle:
+    """Tests for the use_triage parameter that skips triage rules."""
+
+    @pytest.mark.asyncio
+    async def test_triage_enabled_matches_service_desk_rule(
+        self, assignment_service, mock_athena_client, password_reset_ticket
+    ):
+        """With use_triage=True (default), password reset matches triage rule."""
+        mock_athena_client.get_ticket.return_value = password_reset_ticket
+
+        result = await assignment_service.recommend_assignment("IR1234567", use_triage=True)
+
+        assert result.recommendation.method == "triage_rule"
+        assert result.recommendation.support_group_name == "Service Desk"
+        assert result.recommendation.confidence == 1.0
+
+    @pytest.mark.asyncio
+    async def test_triage_disabled_skips_service_desk_rule(
+        self, assignment_service, mock_athena_client, mock_classifier, password_reset_ticket
+    ):
+        """With use_triage=False, password reset goes to classifier instead."""
+        mock_athena_client.get_ticket.return_value = password_reset_ticket
+
+        result = await assignment_service.recommend_assignment("IR1234567", use_triage=False)
+
+        assert result.recommendation.method == "classifier"
+        # Classifier was called
+        mock_classifier.predict.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_triage_disabled_skips_specific_triage_rule(
+        self, assignment_service, mock_athena_client, mock_classifier, estar_ticket
+    ):
+        """With use_triage=False, eStar ticket goes to classifier instead of Kronos."""
+        mock_athena_client.get_ticket.return_value = estar_ticket
+
+        result = await assignment_service.recommend_assignment("IR1234567", use_triage=False)
+
+        assert result.recommendation.method == "classifier"
+        mock_classifier.predict.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_triage_enabled_matches_specific_rule(
+        self, assignment_service, mock_athena_client, estar_ticket
+    ):
+        """With use_triage=True, eStar ticket matches specific triage rule."""
+        mock_athena_client.get_ticket.return_value = estar_ticket
+
+        result = await assignment_service.recommend_assignment("IR1234567", use_triage=True)
+
+        assert result.recommendation.method == "triage_rule"
+        assert result.recommendation.confidence == 1.0
+
+    @pytest.mark.asyncio
+    async def test_triage_default_is_true(
+        self, assignment_service, mock_athena_client, password_reset_ticket
+    ):
+        """Default behavior (no use_triage arg) uses triage rules."""
+        mock_athena_client.get_ticket.return_value = password_reset_ticket
+
+        result = await assignment_service.recommend_assignment("IR1234567")
+
+        assert result.recommendation.method == "triage_rule"
+
+    @pytest.mark.asyncio
+    async def test_non_triage_ticket_unaffected_by_toggle(
+        self, assignment_service, mock_athena_client, mock_classifier, sample_ticket
+    ):
+        """A ticket that doesn't match triage rules uses classifier regardless of toggle."""
+        mock_athena_client.get_ticket.return_value = sample_ticket
+
+        result_with = await assignment_service.recommend_assignment("IR1234567", use_triage=True)
+        mock_classifier.predict.reset_mock()
+        result_without = await assignment_service.recommend_assignment("IR1234567", use_triage=False)
+
+        # Both should use classifier since no triage rule matches
+        assert result_with.recommendation.method == "classifier"
+        assert result_without.recommendation.method == "classifier"

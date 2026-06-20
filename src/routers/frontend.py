@@ -215,12 +215,15 @@ async def ticket_detail_partial(
 async def assignment_recommend_partial(
     request: Request,
     ticket_id: str = Form(...),
+    use_triage: str = Form("off"),
     service: AssignmentService = Depends(get_assignment_service),
 ):
     """HTMX partial: Get assignment recommendation and return results HTML."""
     try:
+        use_triage_bool = use_triage.lower() in ("on", "true", "1", "yes")
         result = await service.recommend_assignment(
             ticket_id=ticket_id,
+            use_triage=use_triage_bool,
         )
         return templates.TemplateResponse(
             request,
