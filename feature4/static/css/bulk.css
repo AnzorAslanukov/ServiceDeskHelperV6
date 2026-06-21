@@ -1319,6 +1319,14 @@
     margin-top: 1rem;
     padding-top: 1rem;
     border-top: 1px solid var(--border-color, #e0e0e0);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.bulk-resolve-section .bulk-resolve-form {
+    flex-basis: 100%;
 }
 
 .bulk-resolve-toggle-btn {
@@ -1432,4 +1440,65 @@
     opacity: 0.6;
     cursor: not-allowed;
     transform: none;
+}
+
+/* ── Resolve Ticket — Dark Mode ────────────────────────────────────── */
+
+[data-theme="dark"] .bulk-resolve-section {
+    border-top-color: var(--border-color, #2D3748);
+}
+
+[data-theme="dark"] .bulk-resolve-toggle-btn {
+    background: rgba(236, 201, 75, 0.15);
+    color: #ECC94B;
+    border-color: rgba(236, 201, 75, 0.4);
+}
+
+[data-theme="dark"] .bulk-resolve-toggle-btn:hover {
+    background: rgba(236, 201, 75, 0.25);
+}
+
+[data-theme="dark"] .bulk-resolve-form {
+    background: var(--bg-secondary, #1A1F2E);
+    border-color: var(--border-color, #2D3748);
+}
+
+[data-theme="dark"] .bulk-resolve-title {
+    color: var(--text-primary, #E2E8F0);
+}
+
+[data-theme="dark"] .bulk-resolve-btn-template {
+    background: var(--bg-tertiary, #242B3D);
+    color: var(--text-secondary, #A0AEC0);
+    border-color: var(--border-color, #2D3748);
+}
+
+[data-theme="dark"] .bulk-resolve-btn-template:hover {
+    background: var(--bg-hover, #2D3748);
+    border-color: var(--border-focus, #4A90D9);
+}
+
+[data-theme="dark"] .bulk-resolve-textarea {
+    background: var(--bg-input, #242B3D);
+    color: var(--text-primary, #E2E8F0);
+    border-color: var(--border-color, #2D3748);
+}
+
+[data-theme="dark"] .bulk-resolve-textarea:focus {
+    border-color: var(--border-focus, #4A90D9);
+    box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.25);
+}
+
+[data-theme="dark"] .bulk-resolve-textarea::placeholder {
+    color: var(--text-muted, #6B7A8D);
+}
+
+[data-theme="dark"] .bulk-resolve-btn-submit {
+    background: var(--status-success, #48BB78);
+    border-color: var(--status-success, #48BB78);
+}
+
+[data-theme="dark"] .bulk-resolve-btn-submit:hover {
+    background: #38A169;
+    border-color: #38A169;
 }
