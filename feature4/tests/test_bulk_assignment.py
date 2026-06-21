@@ -1706,3 +1706,314 @@ async def test_batch_recommend_use_triage_false_skips_triage_rule(
     assert result_with_triage.recommendations[0].success is True
     assert result_with_triage.recommendations[0].recommendation.method == "triage_rule"
     assert result_with_triage.recommendations[0].recommendation.support_group_name == "Service Desk"
+
+
+# ── Assignment Comment Tests ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_assign_tickets_adds_comment(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Should add an action log comment after successful assignment."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"id": "tq-guid", "name": "PennChart\\Ambulatory"},
+        "priority": 3,
+    }
+
+    # Set up mocks for the internal Athena HTTP call used by _add_assignment_comment
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test-token"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="IR10001",
+            entity_id="eid-ir-10001",
+            tier_queue_guid="ae9eb3ff-458a-206f-7815-129d50efa285",
+            tier_queue_name="PennChart\\Ambulatory",
+            priority=3,
+        ),
+    ]
+
+    result = await bulk_assignment_service.assign_tickets(
+        assignments, assigned_by="John Smith"
+    )
+
+    assert result.total_assigned == 1
+    assert result.results[0].success is True
+
+    # Verify the comment PUT was called
+    mock_http_client.put.assert_called_once()
+    call_args = mock_http_client.put.call_args
+
+    # Check URL (IR ticket → incident URL)
+    assert call_args[0][0] == "https://athena.test/v1/incident/"
+
+    # Check payload contains actionLogs
+    payload = call_args[1]["json"]
+    assert payload["entityId"] == "eid-ir-10001"
+    assert len(payload["actionLogs"]) == 1
+    assert payload["actionLogs"][0]["title"] == "Assigned to PennChart\\Ambulatory"
+    assert "PennChart\\Ambulatory" in payload["actionLogs"][0]["description"]
+    assert "priority 3" in payload["actionLogs"][0]["description"]
+    assert "John Smith" in payload["actionLogs"][0]["description"]
+    assert "Service Desk Helper" in payload["actionLogs"][0]["description"]
+
+
+@pytest.mark.asyncio
+async def test_assign_tickets_comment_includes_user_name(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Comment description should include the assigned_by user name."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "EUS"},
+        "priority": 3,
+    }
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="IR10001",
+            entity_id="eid-1",
+            tier_queue_guid="guid-1",
+            tier_queue_name="EUS",
+            priority=3,
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments, assigned_by="Jane Doe")
+
+    payload = mock_http_client.put.call_args[1]["json"]
+    assert "by Jane Doe" in payload["actionLogs"][0]["description"]
+
+
+@pytest.mark.asyncio
+async def test_assign_tickets_comment_without_user(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Comment should still be added when assigned_by is None (no user attribution)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "EUS"},
+        "priority": 3,
+    }
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="IR10001",
+            entity_id="eid-1",
+            tier_queue_guid="guid-1",
+            tier_queue_name="EUS",
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments, assigned_by=None)
+
+    payload = mock_http_client.put.call_args[1]["json"]
+    # Should not contain "by" attribution
+    assert " by " not in payload["actionLogs"][0]["description"]
+    # Should still have the basic info
+    assert "EUS" in payload["actionLogs"][0]["description"]
+    assert "Service Desk Helper" in payload["actionLogs"][0]["description"]
+
+
+@pytest.mark.asyncio
+async def test_assign_tickets_comment_sr_uses_sr_url(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """SR tickets should use the service request URL for the comment PUT."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "User Provisioning"},
+        "priority": "Medium",
+    }
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="SR20001",
+            entity_id="eid-sr-20001",
+            tier_queue_guid="guid-sr",
+            tier_queue_name="User Provisioning",
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments, assigned_by="Bob")
+
+    # Should use SR URL
+    call_args = mock_http_client.put.call_args
+    assert call_args[0][0] == "https://athena.test/v1/servicerequest/"
+
+
+@pytest.mark.asyncio
+async def test_assign_tickets_comment_failure_is_non_fatal(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Comment failure should not affect the assignment result (non-fatal)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "EUS"},
+        "priority": 3,
+    }
+
+    # Make the comment PUT fail
+    mock_http_client = AsyncMock()
+    mock_http_client.put.side_effect = Exception("Network error on comment")
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="IR10001",
+            entity_id="eid-1",
+            tier_queue_guid="guid-1",
+            tier_queue_name="EUS",
+        ),
+    ]
+
+    result = await bulk_assignment_service.assign_tickets(
+        assignments, assigned_by="User"
+    )
+
+    # Assignment should still succeed even though comment failed
+    assert result.total_assigned == 1
+    assert result.total_failed == 0
+    assert result.results[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_assign_tickets_no_comment_on_failed_assignment(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Should NOT attempt to add a comment when the assignment itself fails."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    # Make the assignment fail
+    mock_athena_client.update_ticket.side_effect = Exception("Athena PUT failed")
+
+    mock_http_client = AsyncMock()
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="IR10001",
+            entity_id="eid-1",
+            tier_queue_guid="guid-1",
+            tier_queue_name="EUS",
+        ),
+    ]
+
+    result = await bulk_assignment_service.assign_tickets(
+        assignments, assigned_by="User"
+    )
+
+    # Assignment failed
+    assert result.total_assigned == 0
+    assert result.total_failed == 1
+
+    # Comment PUT should NOT have been called (assignment failed before comment)
+    mock_http_client.put.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_assign_tickets_comment_without_priority(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Comment should omit priority text when priority is None."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "EUS"},
+        "priority": None,
+    }
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="IR10001",
+            entity_id="eid-1",
+            tier_queue_guid="guid-1",
+            tier_queue_name="EUS",
+            priority=None,
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments, assigned_by="User")
+
+    payload = mock_http_client.put.call_args[1]["json"]
+    # Should NOT contain priority text
+    assert "priority" not in payload["actionLogs"][0]["description"]
+    # Should still have group name and user
+    assert "EUS" in payload["actionLogs"][0]["description"]
+    assert "by User" in payload["actionLogs"][0]["description"]

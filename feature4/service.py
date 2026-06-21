@@ -658,15 +658,20 @@ class BulkAssignmentService:
     async def assign_tickets(
         self,
         assignments: list[TicketAssignment],
+        assigned_by: str | None = None,
     ) -> BulkAssignResponse:
         """
         Assign a batch of tickets by updating them in Athena.
 
         For each assignment, calls AthenaClient.update_ticket() with
-        the tier queue GUID and optional priority.
+        the tier queue GUID and optional priority, then adds an action log
+        comment documenting the assignment.
 
         Args:
             assignments: List of TicketAssignment objects with ticket details.
+            assigned_by: Display name of the user performing the assignment.
+                Used in the action log comment. If None, comment is still
+                added but without user attribution.
 
         Returns:
             BulkAssignResponse with per-ticket results.
@@ -703,6 +708,12 @@ class BulkAssignmentService:
                 )
                 assigned_count += 1
 
+                # Add action log comment documenting the assignment (non-fatal)
+                await self._add_assignment_comment(
+                    assignment=assignment,
+                    assigned_by=assigned_by,
+                )
+
                 # Remove lock after successful assignment
                 self._locks.pop(assignment.ticket_id, None)
 
@@ -724,6 +735,77 @@ class BulkAssignmentService:
             total_assigned=assigned_count,
             total_failed=failed_count,
         )
+
+    # ── Assignment Comment ─────────────────────────────────────────────
+
+    async def _add_assignment_comment(
+        self,
+        assignment: TicketAssignment,
+        assigned_by: str | None = None,
+    ) -> None:
+        """
+        Add an action log comment to a ticket documenting the assignment.
+
+        This is a non-fatal operation — if the comment fails to be added,
+        the assignment is still considered successful. A warning is logged.
+
+        Uses the Athena PUT endpoint with actionLogs field to create
+        a System.WorkItem.TroubleTicket.ActionLog entry on the ticket.
+
+        Args:
+            assignment: The ticket assignment details.
+            assigned_by: Display name of the user who performed the assignment.
+        """
+        group_name = assignment.tier_queue_name or "Unknown Group"
+        priority_str = (
+            f" with priority {assignment.priority}"
+            if assignment.priority is not None
+            else ""
+        )
+        user_str = f" by {assigned_by}" if assigned_by else ""
+
+        title = f"Assigned to {group_name}"
+        description = (
+            f"Ticket assigned to support group '{group_name}'{priority_str}"
+            f"{user_str} via Service Desk Helper."
+        )
+
+        # Determine the correct PUT URL based on ticket type
+        ticket_id = assignment.ticket_id
+        is_sr = ticket_id.upper().startswith("SR")
+
+        payload: dict[str, Any] = {
+            "entityId": assignment.entity_id,
+            "actionLogs": [
+                {
+                    "title": title,
+                    "description": description,
+                }
+            ],
+        }
+
+        try:
+            if is_sr:
+                url = self._athena._settings.athena_servicerequest_url
+            else:
+                url = self._athena._settings.athena_incident_url
+
+            client = await self._athena._get_http_client()
+            headers = await self._athena._auth_headers()
+            response = await client.put(url, headers=headers, json=payload)
+            response.raise_for_status()
+            logger.info(
+                "Assignment comment added to %s: '%s'",
+                ticket_id,
+                title,
+            )
+        except Exception as exc:
+            # Non-fatal: assignment already succeeded, just log the warning
+            logger.warning(
+                "Failed to add assignment comment to %s: %s",
+                ticket_id,
+                exc,
+            )
 
     # ── Support Group Lists (for Manual Assignment) ────────────────────
 
