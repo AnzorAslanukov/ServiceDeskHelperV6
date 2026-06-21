@@ -187,6 +187,19 @@ function _handleWsEvent(data) {
             _batchedToast(data.user_id, 'assign', 'info');
         }
 
+    } else if (event === 'resolve') {
+        // Remove resolved ticket from queue (same as assign)
+        delete _bulkLocks[data.ticket_id];
+        _bulkQueue = _bulkQueue.filter(function (t) { return t.id !== data.ticket_id; });
+        _bulkSelected.delete(data.ticket_id);
+        delete _bulkRecs[data.ticket_id];
+        delete _bulkOverrides[data.ticket_id];
+        _renderQueue();
+        _updateCounts();
+        if (data.user_id !== _bulkUserId) {
+            _showToast(data.user_id + ' resolved ' + data.ticket_id, 'info');
+        }
+
     // ── Recommendation Progress Events ────────────────────────────
     } else if (event === 'rec_start') {
         // A user started a recommendation batch — mark tickets as pending
@@ -1134,6 +1147,47 @@ function _renderDetailRow(ticket) {
 
         html += '</div>';  // close manual-assign-fields
         html += '</div>';  // close manual-assign-form
+
+        // ── Resolve Ticket Section ──────────────────────────────────
+        html += '<div class="bulk-resolve-section" data-ticket-id="' + _escapeHtml(ticket.id) + '">';
+        html += '<button class="btn btn-warning btn-sm bulk-resolve-toggle-btn" ' +
+            'onclick="bulkShowResolveForm(\'' + _escapeHtml(ticket.id) + '\')" ' +
+            'id="btnResolveToggle_' + _escapeHtml(ticket.id) + '">' +
+            '✅ Resolve Ticket</button>';
+
+        // Resolve form (hidden by default)
+        html += '<div class="bulk-resolve-form" id="resolveForm_' + _escapeHtml(ticket.id) + '" style="display:none;">';
+        html += '<h4 class="bulk-resolve-title">✅ Resolve Ticket</h4>';
+        html += '<div class="bulk-resolve-fields">';
+
+        // Template button
+        html += '<div class="bulk-resolve-template-row">' +
+            '<button class="btn btn-outline btn-sm bulk-resolve-btn-template" ' +
+            'onclick="bulkFillMaintenanceTemplate(\'' + _escapeHtml(ticket.id) + '\')" ' +
+            'title="Fill with Facilities/Maintenance template">' +
+            '📋 Maintenance Template</button>' +
+            '</div>';
+
+        // Textarea for resolution description
+        html += '<textarea class="bulk-resolve-textarea" ' +
+            'id="resolveText_' + _escapeHtml(ticket.id) + '" ' +
+            'placeholder="Enter resolution description (required)..." ' +
+            'rows="8"></textarea>';
+
+        // Action buttons
+        html += '<div class="bulk-resolve-actions">' +
+            '<button class="btn btn-success btn-sm bulk-resolve-btn-submit" ' +
+            'onclick="bulkSubmitResolution(\'' + _escapeHtml(ticket.id) + '\', \'' + _escapeHtml(ticket.entity_id) + '\')" ' +
+            'id="btnResolveSubmit_' + _escapeHtml(ticket.id) + '">' +
+            '✅ Submit Resolution</button>' +
+            '<button class="btn btn-secondary btn-sm" ' +
+            'onclick="bulkCancelResolve(\'' + _escapeHtml(ticket.id) + '\')">' +
+            '✖ Cancel</button>' +
+            '</div>';
+
+        html += '</div>';  // close bulk-resolve-fields
+        html += '</div>';  // close bulk-resolve-form
+        html += '</div>';  // close bulk-resolve-section
     }
 
     html += '</td></tr>';
@@ -1858,6 +1912,116 @@ function _renderPresence() {
             _escapeHtml(label) + '</span>';
     });
     container.innerHTML = html;
+}
+
+// ── Resolve Ticket Functions ──────────────────────────────────────────
+
+var _MAINTENANCE_TEMPLATE = 'Hello,\n\nThis is not an IS matter. Please contact Facilities for help regarding this issue.\n\u2022 HUP: 215-662-2301\n\u2022 PMC: 215.662.8667\n\u2022 PAH: 215.829.3930\n\u2022 Rittenhouse Physical Plant: 215-893-2225\n\u2022 Princeton: Extension x19798\n\u2022 CCH Plant Operations: 610-431-5158\n    \u25CB Ron Gaudi (director) - 610-738-2475\n    \u25CB Dave McCormick (supervisor) - 610-431-5515\n\u2022 Cherry Hill: 215-356-3295 (John Gravely)\n    \u25CB 215-205-1585 (Erica Edwards, manager)\n\nThank you,\nIS Service Desk';
+
+/**
+ * Show the resolve form for a ticket (toggle visibility).
+ */
+function bulkShowResolveForm(ticketId) {
+    var form = document.getElementById('resolveForm_' + ticketId);
+    var toggleBtn = document.getElementById('btnResolveToggle_' + ticketId);
+    if (!form) return;
+
+    var isVisible = form.style.display !== 'none';
+    form.style.display = isVisible ? 'none' : 'block';
+    if (toggleBtn) {
+        toggleBtn.style.display = isVisible ? '' : 'none';
+    }
+}
+
+/**
+ * Fill the resolve textarea with the maintenance/facilities template.
+ */
+function bulkFillMaintenanceTemplate(ticketId) {
+    var textarea = document.getElementById('resolveText_' + ticketId);
+    if (textarea) {
+        textarea.value = _MAINTENANCE_TEMPLATE;
+        textarea.focus();
+    }
+}
+
+/**
+ * Cancel the resolve form — hide it and clear the textarea.
+ */
+function bulkCancelResolve(ticketId) {
+    var form = document.getElementById('resolveForm_' + ticketId);
+    var toggleBtn = document.getElementById('btnResolveToggle_' + ticketId);
+    if (form) {
+        form.style.display = 'none';
+    }
+    if (toggleBtn) {
+        toggleBtn.style.display = '';
+    }
+    // Clear textarea
+    var textarea = document.getElementById('resolveText_' + ticketId);
+    if (textarea) textarea.value = '';
+}
+
+/**
+ * Submit the resolution for a ticket.
+ * POSTs to /bulk/resolve with the resolution description.
+ */
+function bulkSubmitResolution(ticketId, entityId) {
+    var textarea = document.getElementById('resolveText_' + ticketId);
+    if (!textarea) return;
+
+    var description = textarea.value.trim();
+    if (!description) {
+        _showToast('Resolution description is required', 'warning');
+        textarea.focus();
+        return;
+    }
+
+    var btn = document.getElementById('btnResolveSubmit_' + ticketId);
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Resolving…';
+    }
+
+    fetch('/bulk/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            ticket_id: ticketId,
+            entity_id: entityId,
+            resolution_description: description,
+            user_id: _bulkUserId
+        })
+    })
+    .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    })
+    .then(function (data) {
+        if (data.success) {
+            // Remove from local state (WebSocket event will also do this for other clients)
+            _bulkQueue = _bulkQueue.filter(function (t) { return t.id !== ticketId; });
+            _bulkSelected.delete(ticketId);
+            delete _bulkLocks[ticketId];
+            delete _bulkRecs[ticketId];
+            delete _bulkOverrides[ticketId];
+            _renderQueue();
+            _updateCounts();
+            _showToast('Resolved ' + ticketId + ' ✓', 'success');
+        } else {
+            _showToast('Failed to resolve ' + ticketId + ': ' + (data.error || 'Unknown error'), 'error');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '✅ Submit Resolution';
+            }
+        }
+    })
+    .catch(function (err) {
+        _showToast('Resolution failed: ' + err.message, 'error');
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '✅ Submit Resolution';
+        }
+    });
 }
 
 // ── Toast Notifications ───────────────────────────────────────────────

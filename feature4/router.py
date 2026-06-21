@@ -36,6 +36,8 @@ from feature4.models import (
     LockRequest,
     QueueRequest,
     QueueResponse,
+    ResolveTicketRequest,
+    ResolveTicketResponse,
 )
 from feature4.service import BulkAssignmentService
 from feature4.websocket.events import (
@@ -51,6 +53,7 @@ from feature4.websocket.events import (
     rec_processing_event,
     rec_result_event,
     rec_start_event,
+    resolve_event,
     state_sync_event,
     unlock_event,
 )
@@ -384,6 +387,32 @@ async def bulk_assign(
     for r in result.results:
         if r.success:
             await manager.broadcast_all(assign_event(r.ticket_id, request.user_id))
+
+    return result
+
+
+@router.post("/resolve", response_model=ResolveTicketResponse)
+async def resolve_ticket(
+    request: ResolveTicketRequest,
+    service: BulkAssignmentService = Depends(get_bulk_assignment_service),
+    manager: ConnectionManager = Depends(get_ws_manager),
+) -> ResolveTicketResponse:
+    """
+    Resolve a ticket by setting its status to Resolved in Athena.
+
+    Requires a resolution description (comment). On success, broadcasts
+    a RESOLVE event so all connected clients remove the ticket from the queue.
+    """
+    result = await service.resolve_ticket(
+        ticket_id=request.ticket_id,
+        entity_id=request.entity_id,
+        resolution_description=request.resolution_description,
+        resolved_by=request.user_id,
+    )
+
+    # Broadcast resolve event if successful
+    if result.success:
+        await manager.broadcast_all(resolve_event(result.ticket_id, request.user_id))
 
     return result
 

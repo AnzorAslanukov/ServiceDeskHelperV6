@@ -1312,3 +1312,124 @@
 .btn-alt-select:active {
     transform: scale(0.95);
 }
+
+/* ── Resolve Ticket Section ────────────────────────────────────────── */
+
+.bulk-resolve-section {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color, #e0e0e0);
+}
+
+.bulk-resolve-toggle-btn {
+    background: var(--warning-bg, #fff3cd);
+    color: var(--warning-text, #856404);
+    border: 1px solid var(--warning-border, #ffc107);
+    border-radius: 6px;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+
+.bulk-resolve-toggle-btn:hover {
+    background: var(--warning-hover-bg, #ffe69c);
+    transform: translateY(-1px);
+}
+
+.bulk-resolve-form {
+    margin-top: 0.75rem;
+    padding: 1rem;
+    background: var(--card-bg, #f8f9fa);
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-radius: 8px;
+}
+
+.bulk-resolve-title {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary, #333);
+}
+
+.bulk-resolve-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.bulk-resolve-template-row {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.bulk-resolve-btn-template {
+    background: var(--bg-secondary, #f0f0f0);
+    color: var(--text-secondary, #555);
+    border: 1px solid var(--border-color, #ccc);
+    border-radius: 6px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.bulk-resolve-btn-template:hover {
+    background: var(--bg-hover, #e8e8e8);
+    border-color: var(--border-hover, #999);
+}
+
+.bulk-resolve-textarea {
+    width: 100%;
+    min-height: 140px;
+    padding: 0.6rem 0.75rem;
+    font-family: inherit;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    border: 1px solid var(--border-color, #ccc);
+    border-radius: 6px;
+    resize: vertical;
+    background: var(--input-bg, #fff);
+    color: var(--text-primary, #333);
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.bulk-resolve-textarea:focus {
+    outline: none;
+    border-color: var(--primary-color, #4A90D9);
+    box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.15);
+}
+
+.bulk-resolve-textarea::placeholder {
+    color: var(--text-muted, #999);
+}
+
+.bulk-resolve-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.bulk-resolve-btn-submit {
+    background: var(--success-bg, #28a745);
+    color: #fff;
+    border: 1px solid var(--success-border, #28a745);
+    border-radius: 6px;
+    padding: 0.4rem 0.9rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+
+.bulk-resolve-btn-submit:hover {
+    background: var(--success-hover, #218838);
+    transform: translateY(-1px);
+}
+
+.bulk-resolve-btn-submit:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}

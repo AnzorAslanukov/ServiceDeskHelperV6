@@ -2017,3 +2017,214 @@ async def test_assign_tickets_comment_without_priority(
     # Should still have group name and user
     assert "EUS" in payload["actionLogs"][0]["description"]
     assert "by User" in payload["actionLogs"][0]["description"]
+
+
+# ── Resolve Ticket Tests ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resolve_ticket_success(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Resolve ticket should PUT with status GUID and resolutionDescription."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    # Lock the ticket first
+    bulk_assignment_service.lock_tickets(["IR10001"], "user1")
+
+    result = await bulk_assignment_service.resolve_ticket(
+        ticket_id="IR10001",
+        entity_id="eid-1",
+        resolution_description="Resolved via maintenance template.",
+        resolved_by="user1",
+    )
+
+    assert result.success is True
+    assert result.ticket_id == "IR10001"
+    assert result.error is None
+
+    # Verify the first PUT call (resolution) had correct payload
+    first_call = mock_http_client.put.call_args_list[0]
+    payload = first_call[1]["json"]
+    assert payload["entityId"] == "eid-1"
+    assert payload["status"]["id"] == "2b8830b6-59f0-f574-9c2a-f4b4682f1681"
+    assert payload["resolutionDescription"] == "Resolved via maintenance template."
+
+    # Verify the PUT was sent to the incident URL
+    assert first_call[0][0] == "https://athena.test/v1/incident/"
+
+
+@pytest.mark.asyncio
+async def test_resolve_ticket_releases_lock(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Resolve ticket should release the lock after success."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    # Lock the ticket
+    bulk_assignment_service.lock_tickets(["IR10001"], "user1")
+    assert "IR10001" in bulk_assignment_service.get_locks()
+
+    await bulk_assignment_service.resolve_ticket(
+        ticket_id="IR10001",
+        entity_id="eid-1",
+        resolution_description="Test resolution.",
+        resolved_by="user1",
+    )
+
+    # Lock should be released
+    assert "IR10001" not in bulk_assignment_service.get_locks()
+
+
+@pytest.mark.asyncio
+async def test_resolve_ticket_failure(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Resolve ticket should return error on Athena failure."""
+    from unittest.mock import AsyncMock, MagicMock
+    import httpx
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "400 Bad Request", request=MagicMock(), response=MagicMock()
+    )
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+
+    result = await bulk_assignment_service.resolve_ticket(
+        ticket_id="IR10001",
+        entity_id="eid-1",
+        resolution_description="Test resolution.",
+        resolved_by="user1",
+    )
+
+    assert result.success is False
+    assert result.ticket_id == "IR10001"
+    assert result.error is not None
+
+
+@pytest.mark.asyncio
+async def test_resolve_ticket_sr_uses_sr_url(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Resolve ticket for SR should use the service request URL."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    result = await bulk_assignment_service.resolve_ticket(
+        ticket_id="SR50001",
+        entity_id="eid-sr-1",
+        resolution_description="SR resolved.",
+        resolved_by="user1",
+    )
+
+    assert result.success is True
+    # First PUT call should use SR URL
+    first_call = mock_http_client.put.call_args_list[0]
+    assert first_call[0][0] == "https://athena.test/v1/servicerequest/"
+
+
+@pytest.mark.asyncio
+async def test_resolve_ticket_adds_comment(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """Resolve ticket should add an action log comment after resolution."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_http_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_http_client.put.return_value = mock_response
+
+    mock_athena_client._get_http_client.return_value = mock_http_client
+    mock_athena_client._auth_headers.return_value = {"Authorization": "Bearer test"}
+    mock_athena_client._settings = MagicMock()
+    mock_athena_client._settings.athena_incident_url = "https://athena.test/v1/incident/"
+    mock_athena_client._settings.athena_servicerequest_url = "https://athena.test/v1/servicerequest/"
+
+    await bulk_assignment_service.resolve_ticket(
+        ticket_id="IR10001",
+        entity_id="eid-1",
+        resolution_description="Maintenance resolution.",
+        resolved_by="TestUser",
+    )
+
+    # Should have 2 PUT calls: resolution + comment
+    assert mock_http_client.put.call_count == 2
+
+    # Second call is the comment
+    comment_call = mock_http_client.put.call_args_list[1]
+    comment_payload = comment_call[1]["json"]
+    assert "actionLogs" in comment_payload
+    assert comment_payload["actionLogs"][0]["title"] == "Ticket Resolved"
+    assert "by TestUser" in comment_payload["actionLogs"][0]["description"]
+
+
+def test_resolve_ticket_request_model_validation():
+    """ResolveTicketRequest should reject empty resolution_description."""
+    from pydantic import ValidationError
+    from feature4.models import ResolveTicketRequest
+
+    with pytest.raises(ValidationError):
+        ResolveTicketRequest(
+            ticket_id="IR10001",
+            entity_id="eid-1",
+            resolution_description="",
+            user_id="user1",
+        )
+
+
+def test_resolve_ticket_request_model_valid():
+    """ResolveTicketRequest should accept valid data."""
+    from feature4.models import ResolveTicketRequest
+
+    req = ResolveTicketRequest(
+        ticket_id="IR10001",
+        entity_id="eid-1",
+        resolution_description="Resolved via maintenance.",
+        user_id="user1",
+    )
+    assert req.ticket_id == "IR10001"
+    assert req.resolution_description == "Resolved via maintenance."

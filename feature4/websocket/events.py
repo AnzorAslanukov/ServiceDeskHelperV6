@@ -9,6 +9,7 @@ from feature4.models import (
     WSAssignEvent,
     WSEventType,
     WSLockEvent,
+    WSResolveEvent,
     WSStateSyncEvent,
     WSUnlockEvent,
 )
@@ -27,6 +28,11 @@ def unlock_event(ticket_id: str, user_id: str) -> dict:
 def assign_event(ticket_id: str, user_id: str) -> dict:
     """Create a serialized ASSIGN event (ticket removed from queue)."""
     return WSAssignEvent(ticket_id=ticket_id, user_id=user_id).model_dump()
+
+
+def resolve_event(ticket_id: str, user_id: str) -> dict:
+    """Create a serialized RESOLVE event (ticket resolved and removed from queue)."""
+    return WSResolveEvent(ticket_id=ticket_id, user_id=user_id).model_dump()
 
 
 def state_sync_event(locks: dict[str, str]) -> dict:

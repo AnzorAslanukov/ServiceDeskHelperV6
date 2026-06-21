@@ -27,6 +27,7 @@ from feature4.models import (
     BulkRecommendResponse,
     QueueResponse,
     QueueTicketSummary,
+    ResolveTicketResponse,
     TicketAssignResult,
     TicketAssignment,
     TicketRecommendation,
@@ -735,6 +736,122 @@ class BulkAssignmentService:
             total_assigned=assigned_count,
             total_failed=failed_count,
         )
+
+    # ── Ticket Resolution ──────────────────────────────────────────────
+
+    # Athena status GUIDs for "Resolved"
+    RESOLVED_STATUS_GUID_IR = "2b8830b6-59f0-f574-9c2a-f4b4682f1681"
+    RESOLVED_STATUS_GUID_SR = "2b8830b6-59f0-f574-9c2a-f4b4682f1681"  # Same GUID for both
+
+    async def resolve_ticket(
+        self,
+        ticket_id: str,
+        entity_id: str,
+        resolution_description: str,
+        resolved_by: str | None = None,
+    ) -> ResolveTicketResponse:
+        """
+        Resolve a ticket by setting its status to Resolved in Athena.
+
+        Sends a PUT with status={id: RESOLVED_GUID} and resolutionDescription.
+        Also adds an action log comment documenting the resolution.
+        Releases the lock on the ticket after success.
+
+        Args:
+            ticket_id: Ticket ID (e.g., 'IR10522528').
+            entity_id: Athena entityId GUID.
+            resolution_description: The resolution comment (required by Athena).
+            resolved_by: Display name of the user resolving the ticket.
+
+        Returns:
+            ResolveTicketResponse with success/failure info.
+        """
+        is_sr = ticket_id.upper().startswith("SR")
+
+        payload: dict[str, Any] = {
+            "entityId": entity_id,
+            "status": {
+                "id": self.RESOLVED_STATUS_GUID_SR if is_sr else self.RESOLVED_STATUS_GUID_IR,
+            },
+            "resolutionDescription": resolution_description,
+        }
+
+        try:
+            if is_sr:
+                url = self._athena._settings.athena_servicerequest_url
+            else:
+                url = self._athena._settings.athena_incident_url
+
+            client = await self._athena._get_http_client()
+            headers = await self._athena._auth_headers()
+            response = await client.put(url, headers=headers, json=payload)
+            response.raise_for_status()
+
+            logger.info("Ticket %s resolved by %s", ticket_id, resolved_by or "unknown")
+
+            # Add action log comment documenting the resolution (non-fatal)
+            await self._add_resolution_comment(
+                ticket_id=ticket_id,
+                entity_id=entity_id,
+                is_sr=is_sr,
+                resolved_by=resolved_by,
+            )
+
+            # Release lock after successful resolution
+            self._locks.pop(ticket_id, None)
+
+            return ResolveTicketResponse(
+                ticket_id=ticket_id,
+                success=True,
+            )
+
+        except Exception as exc:
+            logger.warning("Resolution failed for %s: %s", ticket_id, exc)
+            return ResolveTicketResponse(
+                ticket_id=ticket_id,
+                success=False,
+                error=str(exc),
+            )
+
+    async def _add_resolution_comment(
+        self,
+        ticket_id: str,
+        entity_id: str,
+        is_sr: bool,
+        resolved_by: str | None = None,
+    ) -> None:
+        """
+        Add an action log comment documenting the ticket resolution.
+
+        Non-fatal — if the comment fails, the resolution is still successful.
+        """
+        user_str = f" by {resolved_by}" if resolved_by else ""
+        title = "Ticket Resolved"
+        description = f"Ticket resolved{user_str} via Service Desk Helper."
+
+        payload: dict[str, Any] = {
+            "entityId": entity_id,
+            "actionLogs": [
+                {
+                    "title": title,
+                    "description": description,
+                }
+            ],
+        }
+
+        try:
+            if is_sr:
+                url = self._athena._settings.athena_servicerequest_url
+            else:
+                url = self._athena._settings.athena_incident_url
+
+            client = await self._athena._get_http_client()
+            headers = await self._athena._auth_headers()
+            response = await client.put(url, headers=headers, json=payload)
+            response.raise_for_status()
+            logger.info("Resolution comment added to %s", ticket_id)
+        except Exception as exc:
+            logger.warning("Failed to add resolution comment to %s: %s", ticket_id, exc)
 
     # ── Assignment Comment ─────────────────────────────────────────────
 

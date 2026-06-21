@@ -22,6 +22,7 @@ class WSEventType(str, Enum):
     LOCK = "lock"
     UNLOCK = "unlock"
     ASSIGN = "assign"
+    RESOLVE = "resolve"
     STATE_SYNC = "state_sync"
 
 
@@ -234,6 +235,30 @@ class BulkAssignResponse(BaseModel):
     total_failed: int = Field(default=0, description="Number of tickets that failed assignment.")
 
 
+# ── Resolution Models ─────────────────────────────────────────────────
+
+
+class ResolveTicketRequest(BaseModel):
+    """Request to resolve a ticket with a resolution description."""
+
+    ticket_id: str = Field(..., description="Ticket ID (e.g., 'IR10522528').")
+    entity_id: str = Field(..., description="Athena entityId GUID (required for PUT).")
+    resolution_description: str = Field(
+        ...,
+        min_length=1,
+        description="Resolution comment/description. Cannot be empty.",
+    )
+    user_id: str = Field(..., description="User ID performing the resolution.")
+
+
+class ResolveTicketResponse(BaseModel):
+    """Response from the resolve ticket endpoint."""
+
+    ticket_id: str = Field(description="Ticket ID that was resolved.")
+    success: bool = Field(description="Whether the resolution succeeded.")
+    error: str | None = Field(default=None, description="Error message if resolution failed.")
+
+
 # ── WebSocket Event Models ────────────────────────────────────────────
 
 
@@ -259,6 +284,14 @@ class WSAssignEvent(BaseModel):
     event: WSEventType = Field(default=WSEventType.ASSIGN)
     ticket_id: str = Field(description="Ticket ID that was assigned.")
     user_id: str = Field(description="User who performed the assignment.")
+
+
+class WSResolveEvent(BaseModel):
+    """WebSocket event: a ticket was resolved and removed from the queue."""
+
+    event: WSEventType = Field(default=WSEventType.RESOLVE)
+    ticket_id: str = Field(description="Ticket ID that was resolved.")
+    user_id: str = Field(description="User who resolved the ticket.")
 
 
 class WSStateSyncEvent(BaseModel):
