@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 
 from src.models.chat import MessageRole, SourceType
 from src.services.chatbot import ChatbotService, TICKET_ID_PATTERN
+from src.services.local_vector_store import LocalVectorStore
 
 
 # ── Chat Flow ─────────────────────────────────────────────────────────
@@ -36,6 +37,7 @@ async def test_chat_generates_embedding(
 async def test_chat_retrieves_documentation_and_tickets(
     chatbot_service: ChatbotService,
     mock_databricks_client,
+    mock_vector_store,
 ):
     """Chat should search both documentation and ticket embeddings."""
     await chatbot_service.chat(
@@ -44,13 +46,13 @@ async def test_chat_retrieves_documentation_and_tickets(
         top_k_tickets=7,
     )
 
-    mock_databricks_client.find_similar_documentation.assert_called_once()
-    doc_call_args = mock_databricks_client.find_similar_documentation.call_args
-    assert doc_call_args[0][1] == 3  # top_k_docs
+    mock_vector_store.find_similar_documentation.assert_called_once()
+    doc_call_args = mock_vector_store.find_similar_documentation.call_args
+    assert doc_call_args[1]["top_k"] == 3  # top_k_docs
 
-    mock_databricks_client.find_similar_by_embedding.assert_called_once()
-    ticket_call_args = mock_databricks_client.find_similar_by_embedding.call_args
-    assert ticket_call_args[0][4] == 7  # top_k_tickets
+    mock_vector_store.find_similar_by_embedding.assert_called_once()
+    ticket_call_args = mock_vector_store.find_similar_by_embedding.call_args
+    assert ticket_call_args[1]["top_k"] == 7  # top_k_tickets
 
 
 @pytest.mark.asyncio
@@ -105,11 +107,11 @@ async def test_chat_respects_max_tokens(
 @pytest.mark.asyncio
 async def test_chat_returns_documentation_sources(
     chatbot_service: ChatbotService,
-    mock_databricks_client,
+    mock_vector_store,
     sample_documentation_results,
 ):
     """Chat should return documentation sources with correct fields."""
-    mock_databricks_client.find_similar_documentation.return_value = (
+    mock_vector_store.find_similar_documentation.return_value = (
         sample_documentation_results
     )
 
@@ -127,11 +129,11 @@ async def test_chat_returns_documentation_sources(
 @pytest.mark.asyncio
 async def test_chat_returns_ticket_sources(
     chatbot_service: ChatbotService,
-    mock_databricks_client,
+    mock_vector_store,
     sample_similar_results,
 ):
     """Chat should return ticket sources with IDs and similarity scores."""
-    mock_databricks_client.find_similar_by_embedding.return_value = (
+    mock_vector_store.find_similar_by_embedding.return_value = (
         sample_similar_results
     )
 
@@ -147,10 +149,11 @@ async def test_chat_returns_ticket_sources(
 async def test_chat_empty_retrieval_results(
     chatbot_service: ChatbotService,
     mock_databricks_client,
+    mock_vector_store,
 ):
     """Chat should handle empty retrieval results gracefully."""
-    mock_databricks_client.find_similar_documentation.return_value = []
-    mock_databricks_client.find_similar_by_embedding.return_value = []
+    mock_vector_store.find_similar_documentation.return_value = []
+    mock_vector_store.find_similar_by_embedding.return_value = []
 
     result = await chatbot_service.chat(message="something unusual")
 
@@ -418,10 +421,11 @@ async def test_llm_messages_include_system_prompt(
 async def test_llm_messages_include_context(
     chatbot_service: ChatbotService,
     mock_databricks_client,
+    mock_vector_store,
     sample_documentation_results,
 ):
     """LLM system prompt should include retrieved documentation context."""
-    mock_databricks_client.find_similar_documentation.return_value = (
+    mock_vector_store.find_similar_documentation.return_value = (
         sample_documentation_results
     )
 
@@ -479,6 +483,7 @@ def test_ticket_id_regex_no_match_no_prefix():
 async def test_chat_fetches_referenced_ticket(
     mock_databricks_client,
     mock_athena_client,
+    mock_vector_store,
     sample_athena_ticket,
 ):
     """Chat should fetch ticket data when a ticket ID is mentioned."""
@@ -487,6 +492,7 @@ async def test_chat_fetches_referenced_ticket(
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=mock_athena_client,
+        vector_store=mock_vector_store,
     )
 
     result = await service.chat(message="What should I do with IR1959493?")
@@ -505,6 +511,7 @@ async def test_chat_fetches_referenced_ticket(
 async def test_chat_referenced_ticket_in_sources(
     mock_databricks_client,
     mock_athena_client,
+    mock_vector_store,
     sample_athena_ticket,
 ):
     """Referenced tickets should appear in source citations."""
@@ -513,6 +520,7 @@ async def test_chat_referenced_ticket_in_sources(
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=mock_athena_client,
+        vector_store=mock_vector_store,
     )
 
     result = await service.chat(message="Help with IR1959493")
@@ -527,6 +535,7 @@ async def test_chat_referenced_ticket_in_sources(
 async def test_chat_ticket_not_found_handled_gracefully(
     mock_databricks_client,
     mock_athena_client,
+    mock_vector_store,
 ):
     """Chat should handle ticket not found gracefully."""
     mock_athena_client.get_ticket.return_value = None
@@ -534,6 +543,7 @@ async def test_chat_ticket_not_found_handled_gracefully(
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=mock_athena_client,
+        vector_store=mock_vector_store,
     )
 
     result = await service.chat(message="What about IR9999999?")
@@ -550,11 +560,13 @@ async def test_chat_ticket_not_found_handled_gracefully(
 @pytest.mark.asyncio
 async def test_chat_no_athena_client_skips_fetch(
     mock_databricks_client,
+    mock_vector_store,
 ):
     """Without an Athena client, ticket detection is skipped."""
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=None,
+        vector_store=mock_vector_store,
     )
 
     result = await service.chat(message="What about IR1959493?")
@@ -570,11 +582,13 @@ async def test_chat_no_athena_client_skips_fetch(
 async def test_chat_no_ticket_in_message_skips_fetch(
     mock_databricks_client,
     mock_athena_client,
+    mock_vector_store,
 ):
     """Messages without ticket IDs should not trigger Athena fetch."""
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=mock_athena_client,
+        vector_store=mock_vector_store,
     )
 
     await service.chat(message="How do I reset a password?")
@@ -622,8 +636,9 @@ def test_format_ticket_truncates_long_description():
 @pytest.mark.asyncio
 async def test_chat_skips_sql_when_graph_has_context(
     mock_databricks_client,
+    mock_vector_store,
 ):
-    """When KG has sufficient context, SQL similarity searches should be skipped entirely."""
+    """When KG has sufficient context, similarity searches should be skipped entirely."""
     from unittest.mock import MagicMock, patch
     from src.services.knowledge_graph import KnowledgeGraphService
 
@@ -644,15 +659,16 @@ async def test_chat_skips_sql_when_graph_has_context(
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         knowledge_graph_service=mock_kg,
+        vector_store=mock_vector_store,
     )
 
     await service.chat(message="How do I handle PennChart issues?")
 
     # Embedding should NOT be generated (skipped entirely)
     mock_databricks_client.generate_embedding.assert_not_called()
-    # SQL searches should NOT be called
-    mock_databricks_client.find_similar_documentation.assert_not_called()
-    mock_databricks_client.find_similar_by_embedding.assert_not_called()
+    # Similarity searches should NOT be called
+    mock_vector_store.find_similar_documentation.assert_not_called()
+    mock_vector_store.find_similar_by_embedding.assert_not_called()
     # LLM should still be called
     mock_databricks_client.call_llm.assert_called_once()
 
@@ -661,40 +677,44 @@ async def test_chat_skips_sql_when_graph_has_context(
 async def test_chat_skips_sql_when_referenced_ticket_found(
     mock_databricks_client,
     mock_athena_client,
+    mock_vector_store,
     sample_athena_ticket,
 ):
-    """When a referenced ticket is fetched, SQL ticket search should be skipped."""
+    """When a referenced ticket is fetched, ticket similarity search should be skipped."""
     mock_athena_client.get_ticket.return_value = sample_athena_ticket
 
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=mock_athena_client,
+        vector_store=mock_vector_store,
     )
 
     await service.chat(message="What should I do with IR1959493?")
 
     # Ticket similarity search should be skipped (we have the referenced ticket)
-    mock_databricks_client.find_similar_by_embedding.assert_not_called()
+    mock_vector_store.find_similar_by_embedding.assert_not_called()
     # But doc search still runs (no KG context)
-    mock_databricks_client.find_similar_documentation.assert_called_once()
+    mock_vector_store.find_similar_documentation.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_chat_runs_full_search_when_no_context(
     mock_databricks_client,
+    mock_vector_store,
 ):
-    """Without KG context or referenced tickets, full SQL search should run."""
+    """Without KG context or referenced tickets, full similarity search should run."""
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=None,
+        vector_store=mock_vector_store,
     )
 
     await service.chat(message="random question with no context")
 
     # Both searches should run
     mock_databricks_client.generate_embedding.assert_called_once()
-    mock_databricks_client.find_similar_documentation.assert_called_once()
-    mock_databricks_client.find_similar_by_embedding.assert_called_once()
+    mock_vector_store.find_similar_documentation.assert_called_once()
+    mock_vector_store.find_similar_by_embedding.assert_called_once()
 
 
 # ── Streaming ─────────────────────────────────────────────────────────
@@ -703,6 +723,7 @@ async def test_chat_runs_full_search_when_no_context(
 @pytest.mark.asyncio
 async def test_chat_stream_yields_events(
     mock_databricks_client,
+    mock_vector_store,
 ):
     """chat_stream should yield sources, tokens, and done events."""
 
@@ -716,6 +737,7 @@ async def test_chat_stream_yields_events(
     service = ChatbotService(
         databricks_client=mock_databricks_client,
         athena_client=None,
+        vector_store=mock_vector_store,
     )
 
     events = []
@@ -761,6 +783,7 @@ async def test_chat_stream_yields_events(
 @pytest.mark.asyncio
 async def test_chat_stream_records_session_history(
     mock_databricks_client,
+    mock_vector_store,
 ):
     """chat_stream should record messages in session history."""
 
@@ -771,6 +794,7 @@ async def test_chat_stream_records_session_history(
 
     service = ChatbotService(
         databricks_client=mock_databricks_client,
+        vector_store=mock_vector_store,
     )
 
     session_id = "stream-session"
@@ -804,7 +828,7 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_runs_when_ticket_referenced(
-        self, mock_databricks_client, mock_athena_client
+        self, mock_databricks_client, mock_athena_client, mock_vector_store
     ):
         """Classifier should run when a ticket ID is detected and fetched."""
         mock_athena_client.get_ticket.return_value = {
@@ -820,6 +844,7 @@ class TestClassifierIntegration:
         service = ChatbotService(
             databricks_client=mock_databricks_client,
             athena_client=mock_athena_client,
+            vector_store=mock_vector_store,
             ticket_classifier=classifier,
         )
 
@@ -832,12 +857,13 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_not_called_without_ticket(
-        self, mock_databricks_client
+        self, mock_databricks_client, mock_vector_store
     ):
         """Classifier should NOT run when no ticket IDs are in the message."""
         classifier = self._make_mock_classifier()
         service = ChatbotService(
             databricks_client=mock_databricks_client,
+            vector_store=mock_vector_store,
             ticket_classifier=classifier,
         )
 
@@ -847,7 +873,7 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_results_in_context(
-        self, mock_databricks_client, mock_athena_client
+        self, mock_databricks_client, mock_athena_client, mock_vector_store
     ):
         """Classifier predictions should appear in the LLM context."""
         mock_athena_client.get_ticket.return_value = {
@@ -863,6 +889,7 @@ class TestClassifierIntegration:
         service = ChatbotService(
             databricks_client=mock_databricks_client,
             athena_client=mock_athena_client,
+            vector_store=mock_vector_store,
             ticket_classifier=classifier,
         )
 
@@ -877,7 +904,7 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_handles_sr_tickets(
-        self, mock_databricks_client, mock_athena_client
+        self, mock_databricks_client, mock_athena_client, mock_vector_store
     ):
         """Classifier should use SR support groups for SR tickets."""
         mock_athena_client.get_ticket.return_value = {
@@ -893,6 +920,7 @@ class TestClassifierIntegration:
         service = ChatbotService(
             databricks_client=mock_databricks_client,
             athena_client=mock_athena_client,
+            vector_store=mock_vector_store,
             ticket_classifier=classifier,
         )
 
@@ -903,7 +931,7 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_skips_not_found_tickets(
-        self, mock_databricks_client, mock_athena_client
+        self, mock_databricks_client, mock_athena_client, mock_vector_store
     ):
         """Classifier should skip tickets that weren't found in Athena."""
         mock_athena_client.get_ticket.return_value = None
@@ -912,6 +940,7 @@ class TestClassifierIntegration:
         service = ChatbotService(
             databricks_client=mock_databricks_client,
             athena_client=mock_athena_client,
+            vector_store=mock_vector_store,
             ticket_classifier=classifier,
         )
 
@@ -921,7 +950,7 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_triage_rule_takes_priority(
-        self, mock_databricks_client, mock_athena_client
+        self, mock_databricks_client, mock_athena_client, mock_vector_store
     ):
         """Triage rules should take priority over the classifier."""
         mock_athena_client.get_ticket.return_value = {
@@ -937,6 +966,7 @@ class TestClassifierIntegration:
         service = ChatbotService(
             databricks_client=mock_databricks_client,
             athena_client=mock_athena_client,
+            vector_store=mock_vector_store,
             ticket_classifier=classifier,
         )
 
@@ -954,7 +984,7 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_no_classifier_instance(
-        self, mock_databricks_client, mock_athena_client
+        self, mock_databricks_client, mock_athena_client, mock_vector_store
     ):
         """Service should work fine without a classifier (backward compatible)."""
         mock_athena_client.get_ticket.return_value = {
@@ -967,6 +997,7 @@ class TestClassifierIntegration:
         service = ChatbotService(
             databricks_client=mock_databricks_client,
             athena_client=mock_athena_client,
+            vector_store=mock_vector_store,
             ticket_classifier=None,  # No classifier
         )
 
@@ -1026,7 +1057,7 @@ class TestClassifierIntegration:
 
     @pytest.mark.asyncio
     async def test_classifier_multiple_tickets(
-        self, mock_databricks_client, mock_athena_client
+        self, mock_databricks_client, mock_athena_client, mock_vector_store
     ):
         """Classifier should run for each unique ticket ID in the message."""
         call_count = 0
@@ -1047,6 +1078,7 @@ class TestClassifierIntegration:
         service = ChatbotService(
             databricks_client=mock_databricks_client,
             athena_client=mock_athena_client,
+            vector_store=mock_vector_store,
             ticket_classifier=classifier,
         )
 

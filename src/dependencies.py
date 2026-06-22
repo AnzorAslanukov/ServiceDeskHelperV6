@@ -15,6 +15,7 @@ from src.services.assignment import AssignmentService
 from src.services.auth import AuthService, AuthUser
 from src.services.chatbot import ChatbotService
 from src.services.knowledge_graph import KnowledgeGraphService
+from src.services.local_vector_store import LocalVectorStore
 from src.services.ticket_search import TicketSearchService
 from src.services.turnover import TurnoverService
 
@@ -79,11 +80,25 @@ def get_databricks_client() -> DatabricksClient:
     return DatabricksClient(_get_settings())
 
 
+# Singleton local vector store (loaded once at startup, ~700MB in memory)
+_vector_store: LocalVectorStore | None = None
+
+
+def get_vector_store() -> LocalVectorStore:
+    """Provide a LocalVectorStore singleton (loaded once, stays in memory)."""
+    global _vector_store
+    if _vector_store is None:
+        _vector_store = LocalVectorStore()
+        _vector_store.load()
+    return _vector_store
+
+
 def get_search_service() -> TicketSearchService:
     """Provide a TicketSearchService with injected clients."""
     return TicketSearchService(
         athena_client=get_athena_client(),
         databricks_client=get_databricks_client(),
+        vector_store=get_vector_store(),
     )
 
 
@@ -105,7 +120,7 @@ _chatbot_service: ChatbotService | None = None
 
 
 def get_chatbot_service() -> ChatbotService:
-    """Provide a ChatbotService singleton with injected Databricks client, knowledge graph, Athena client, and classifier."""
+    """Provide a ChatbotService singleton with injected Databricks client, knowledge graph, Athena client, vector store, and classifier."""
     global _chatbot_service
     if _chatbot_service is None:
         from src.services.ticket_classifier import get_ticket_classifier
@@ -114,6 +129,7 @@ def get_chatbot_service() -> ChatbotService:
             databricks_client=get_databricks_client(),
             knowledge_graph_service=get_knowledge_graph_service(),
             athena_client=get_athena_client(),
+            vector_store=get_vector_store(),
             ticket_classifier=get_ticket_classifier(),
         )
     return _chatbot_service

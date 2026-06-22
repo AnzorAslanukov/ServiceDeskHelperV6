@@ -34,6 +34,8 @@ exploration/output/
 # Large data files
 onenote_documentation.jsonl
 *.pkl
+data/vectors/
+knowledge_graph/output/
 
 # Internal documentation
 athena_ticketing_system_documentation/
@@ -44,3 +46,5 @@ temp_bulk.js
 
 # Cline config
 .clineignore
+
+cookies.txt

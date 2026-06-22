@@ -36,6 +36,7 @@ from src.services.assignment import (
     resolve_group_guid,
 )
 from src.services.knowledge_graph import KnowledgeGraphService
+from src.services.local_vector_store import LocalVectorStore
 from src.services.ticket_classifier import TicketClassifier, get_ticket_classifier
 
 logger = logging.getLogger(__name__)
@@ -122,11 +123,13 @@ class ChatbotService:
         databricks_client: DatabricksClient,
         knowledge_graph_service: KnowledgeGraphService | None = None,
         athena_client: AthenaClient | None = None,
+        vector_store: LocalVectorStore | None = None,
         ticket_classifier: TicketClassifier | None = None,
     ) -> None:
         self._databricks = databricks_client
         self._knowledge_graph = knowledge_graph_service
         self._athena = athena_client
+        self._vector_store = vector_store
         self._classifier = ticket_classifier
         # In-memory session store: session_id -> list of ChatMessage
         self._sessions: dict[str, list[ChatMessage]] = {}
@@ -222,49 +225,26 @@ class ChatbotService:
             logger.info("Graph context sufficient — skipping doc search, running ticket similarity only")
             query_embedding = await self._databricks.generate_embedding(message)
             doc_results = []
-            loop = asyncio.get_event_loop()
-            ticket_results = await loop.run_in_executor(
-                None,
-                self._databricks.find_similar_by_embedding,
-                query_embedding,
-                "hive_metastore.embeddings_db.ticket_embeddings",
-                "embedding",
-                "Id",
-                top_k_tickets,
+            ticket_results = self._vector_store.find_similar_by_embedding(
+                query_embedding, top_k=top_k_tickets
             )
         elif skip_ticket_search and not skip_doc_search:
             # Referenced ticket provides ticket context but we still need doc search
             logger.info("Referenced ticket found — skipping ticket search, running doc search only")
             query_embedding = await self._databricks.generate_embedding(message)
             ticket_results = []
-            loop = asyncio.get_event_loop()
-            doc_results = await loop.run_in_executor(
-                None,
-                self._databricks.find_similar_documentation,
-                query_embedding,
-                top_k_docs,
+            doc_results = self._vector_store.find_similar_documentation(
+                query_embedding, top_k=top_k_docs
             )
         else:
             # Full fallback — need both doc and ticket similarity
             logger.info("Insufficient context — running full text similarity search")
             query_embedding = await self._databricks.generate_embedding(message)
-            loop = asyncio.get_event_loop()
-            doc_results, ticket_results = await asyncio.gather(
-                loop.run_in_executor(
-                    None,
-                    self._databricks.find_similar_documentation,
-                    query_embedding,
-                    top_k_docs,
-                ),
-                loop.run_in_executor(
-                    None,
-                    self._databricks.find_similar_by_embedding,
-                    query_embedding,
-                    "hive_metastore.embeddings_db.ticket_embeddings",
-                    "embedding",
-                    "Id",
-                    top_k_tickets,
-                ),
+            doc_results = self._vector_store.find_similar_documentation(
+                query_embedding, top_k=top_k_docs
+            )
+            ticket_results = self._vector_store.find_similar_by_embedding(
+                query_embedding, top_k=top_k_tickets
             )
 
         # Step 3.5: Run classifier on referenced tickets (conditional — only when tickets detected)
@@ -856,45 +836,22 @@ class ChatbotService:
         elif skip_doc_search:
             query_embedding = await self._databricks.generate_embedding(message)
             doc_results = []
-            loop = asyncio.get_event_loop()
-            ticket_results = await loop.run_in_executor(
-                None,
-                self._databricks.find_similar_by_embedding,
-                query_embedding,
-                "hive_metastore.embeddings_db.ticket_embeddings",
-                "embedding",
-                "Id",
-                top_k_tickets,
+            ticket_results = self._vector_store.find_similar_by_embedding(
+                query_embedding, top_k=top_k_tickets
             )
         elif skip_ticket_search:
             query_embedding = await self._databricks.generate_embedding(message)
             ticket_results = []
-            loop = asyncio.get_event_loop()
-            doc_results = await loop.run_in_executor(
-                None,
-                self._databricks.find_similar_documentation,
-                query_embedding,
-                top_k_docs,
+            doc_results = self._vector_store.find_similar_documentation(
+                query_embedding, top_k=top_k_docs
             )
         else:
             query_embedding = await self._databricks.generate_embedding(message)
-            loop = asyncio.get_event_loop()
-            doc_results, ticket_results = await asyncio.gather(
-                loop.run_in_executor(
-                    None,
-                    self._databricks.find_similar_documentation,
-                    query_embedding,
-                    top_k_docs,
-                ),
-                loop.run_in_executor(
-                    None,
-                    self._databricks.find_similar_by_embedding,
-                    query_embedding,
-                    "hive_metastore.embeddings_db.ticket_embeddings",
-                    "embedding",
-                    "Id",
-                    top_k_tickets,
-                ),
+            doc_results = self._vector_store.find_similar_documentation(
+                query_embedding, top_k=top_k_docs
+            )
+            ticket_results = self._vector_store.find_similar_by_embedding(
+                query_embedding, top_k=top_k_tickets
             )
 
         # Mark search steps as done

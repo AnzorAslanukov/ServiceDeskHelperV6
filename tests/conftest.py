@@ -11,6 +11,7 @@ from src.clients.athena_client import AthenaClient
 from src.clients.databricks_client import DatabricksClient
 from src.services.assignment import AssignmentService
 from src.services.chatbot import ChatbotService
+from src.services.local_vector_store import LocalVectorStore
 from src.services.ticket_search import TicketSearchService
 from src.services.turnover import TurnoverService
 
@@ -39,8 +40,9 @@ def mock_athena_client() -> AsyncMock:
 def mock_databricks_client() -> MagicMock:
     """
     Create a mock DatabricksClient.
-    
-    Note: SQL methods are synchronous, embedding methods are async.
+
+    Only provides serving endpoint methods (embedding + LLM).
+    SQL warehouse methods have been removed — vector search is now local.
     """
     client = MagicMock(spec=DatabricksClient)
     # Async methods need AsyncMock
@@ -48,35 +50,51 @@ def mock_databricks_client() -> MagicMock:
     client.generate_embeddings = AsyncMock(return_value=[[0.1] * 1024])
     client.call_llm = AsyncMock(return_value="This is a mock LLM response.")
     client.close = AsyncMock()
-    # Sync SQL methods
-    client.find_similar_by_embedding.return_value = []
-    client.find_similar_documentation.return_value = []
-    client.get_ticket_embedding.return_value = None
-    client.execute_query.return_value = []
     return client
 
 
 @pytest.fixture
-def search_service(mock_athena_client, mock_databricks_client) -> TicketSearchService:
-    """Create a TicketSearchService with mocked clients."""
+def mock_vector_store() -> MagicMock:
+    """
+    Create a mock LocalVectorStore.
+
+    Provides synchronous similarity search methods that replace
+    the old DatabricksClient SQL methods.
+    """
+    store = MagicMock(spec=LocalVectorStore)
+    store.find_similar_by_embedding.return_value = []
+    store.find_similar_documentation.return_value = []
+    store.get_ticket_embedding.return_value = None
+    store.is_loaded = True
+    store.documentation_count = 0
+    store.ticket_count = 0
+    return store
+
+
+@pytest.fixture
+def search_service(mock_athena_client, mock_databricks_client, mock_vector_store) -> TicketSearchService:
+    """Create a TicketSearchService with mocked clients and vector store."""
     return TicketSearchService(
         athena_client=mock_athena_client,
         databricks_client=mock_databricks_client,
+        vector_store=mock_vector_store,
     )
 
 
 @pytest.fixture
-def chatbot_service(mock_databricks_client) -> ChatbotService:
-    """Create a ChatbotService with a mocked Databricks client."""
-    return ChatbotService(databricks_client=mock_databricks_client)
+def chatbot_service(mock_databricks_client, mock_vector_store) -> ChatbotService:
+    """Create a ChatbotService with mocked Databricks client and vector store."""
+    return ChatbotService(
+        databricks_client=mock_databricks_client,
+        vector_store=mock_vector_store,
+    )
 
 
 @pytest.fixture
-def assignment_service(mock_athena_client, mock_databricks_client) -> AssignmentService:
+def assignment_service(mock_athena_client) -> AssignmentService:
     """Create an AssignmentService with mocked clients."""
     return AssignmentService(
         athena_client=mock_athena_client,
-        databricks_client=mock_databricks_client,
     )
 
 

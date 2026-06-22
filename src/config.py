@@ -29,12 +29,13 @@ class Settings(BaseSettings):
     athena_sr_support_group_guid: str = Field(alias="ATHENA_SR_SUPPORT_GROUP_GUID")
     athena_json_template: str = Field(alias="ATHENA_JSON_TEMPLATE")
 
-    # Databricks API
+    # Databricks API (serving endpoints only — SQL warehouse no longer used at runtime)
     databricks_api_key: str = Field(alias="DATABRICKS_API_KEY")
     databricks_sonnet_url: str = Field(alias="DATABRICKS_SONNET_4.5_URL")
     databricks_embedding_url: str = Field(alias="DATABRICKS_EMBEDDING_URL")
-    databricks_server_hostname: str = Field(alias="DATABRICKS_SERVER_HOSTNAME")
-    databricks_http_path: str = Field(alias="DATABRICKS_HTTP_PATH")
+    # SQL warehouse settings (only needed for data export script, not at runtime)
+    databricks_server_hostname: str = Field(default="", alias="DATABRICKS_SERVER_HOSTNAME")
+    databricks_http_path: str = Field(default="", alias="DATABRICKS_HTTP_PATH")
 
     # Authentication (LDAP)
     ldap_server: str = Field(default="ldap://uphs.pennhealth.prv", alias="LDAP_SERVER")

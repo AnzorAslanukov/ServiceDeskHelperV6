@@ -167,13 +167,13 @@ async def test_semantic_search_generates_embedding(
 @pytest.mark.asyncio
 async def test_semantic_search_returns_tickets_and_docs(
     search_service: TicketSearchService,
-    mock_databricks_client,
+    mock_vector_store,
     sample_similar_results,
     sample_documentation_results,
 ):
     """Semantic search should return both similar tickets and documentation."""
-    mock_databricks_client.find_similar_by_embedding.return_value = sample_similar_results
-    mock_databricks_client.find_similar_documentation.return_value = sample_documentation_results
+    mock_vector_store.find_similar_by_embedding.return_value = sample_similar_results
+    mock_vector_store.find_similar_documentation.return_value = sample_documentation_results
 
     result = await search_service.semantic_search(query="printer issue", top_k=5)
 
@@ -190,11 +190,11 @@ async def test_semantic_search_returns_tickets_and_docs(
 @pytest.mark.asyncio
 async def test_semantic_search_empty_results(
     search_service: TicketSearchService,
-    mock_databricks_client,
+    mock_vector_store,
 ):
     """Semantic search with no matches should return empty lists."""
-    mock_databricks_client.find_similar_by_embedding.return_value = []
-    mock_databricks_client.find_similar_documentation.return_value = []
+    mock_vector_store.find_similar_by_embedding.return_value = []
+    mock_vector_store.find_similar_documentation.return_value = []
 
     result = await search_service.semantic_search(query="something very unusual")
 
@@ -210,6 +210,7 @@ async def test_find_similar_tickets_returns_results(
     search_service: TicketSearchService,
     mock_athena_client,
     mock_databricks_client,
+    mock_vector_store,
     sample_similar_results,
 ):
     """Ticket similarity should fetch ticket from Athena, generate embedding, and find similar tickets."""
@@ -219,7 +220,7 @@ async def test_find_similar_tickets_returns_results(
         "description": "HP LaserJet on 3rd floor Ravdin is not printing.",
     }
     mock_databricks_client.generate_embedding.return_value = [0.5] * 1024
-    mock_databricks_client.find_similar_by_embedding.return_value = sample_similar_results
+    mock_vector_store.find_similar_by_embedding.return_value = sample_similar_results
 
     result = await search_service.find_similar_tickets(ticket_id="IR1959493", top_k=5)
 
@@ -240,6 +241,7 @@ async def test_find_similar_tickets_sr_ticket(
     search_service: TicketSearchService,
     mock_athena_client,
     mock_databricks_client,
+    mock_vector_store,
     sample_similar_results,
 ):
     """Ticket similarity should work for SR tickets via get_ticket auto-detection."""
@@ -249,7 +251,7 @@ async def test_find_similar_tickets_sr_ticket(
         "description": "User needs a new laptop for remote work.",
     }
     mock_databricks_client.generate_embedding.return_value = [0.5] * 1024
-    mock_databricks_client.find_similar_by_embedding.return_value = sample_similar_results
+    mock_vector_store.find_similar_by_embedding.return_value = sample_similar_results
 
     result = await search_service.find_similar_tickets(ticket_id="SR10393291", top_k=5)
 
@@ -268,6 +270,7 @@ async def test_find_similar_tickets_excludes_self(
     search_service: TicketSearchService,
     mock_athena_client,
     mock_databricks_client,
+    mock_vector_store,
 ):
     """Ticket similarity should exclude the source ticket from results."""
     mock_athena_client.get_ticket.return_value = {
@@ -276,7 +279,7 @@ async def test_find_similar_tickets_excludes_self(
         "description": "Not printing.",
     }
     mock_databricks_client.generate_embedding.return_value = [0.5] * 1024
-    mock_databricks_client.find_similar_by_embedding.return_value = [
+    mock_vector_store.find_similar_by_embedding.return_value = [
         {"id": "IR1959493", "similarity": 1.0},  # self — should be excluded
         {"id": "IR1959100", "similarity": 0.95},
         {"id": "IR1959101", "similarity": 0.91},

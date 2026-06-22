@@ -24,14 +24,21 @@ from src.models.search import (
     TicketSummary,
 )
 from src.services.assignment import LOCATION_GUID_TO_FULLNAME
+from src.services.local_vector_store import LocalVectorStore
 
 
 class TicketSearchService:
     """Orchestrates search operations across Athena and Databricks."""
 
-    def __init__(self, athena_client: AthenaClient, databricks_client: DatabricksClient) -> None:
+    def __init__(
+        self,
+        athena_client: AthenaClient,
+        databricks_client: DatabricksClient,
+        vector_store: LocalVectorStore | None = None,
+    ) -> None:
         self._athena = athena_client
         self._databricks = databricks_client
+        self._vector_store = vector_store
 
     # ── Mode 1: Field Match ───────────────────────────────────────────
 
@@ -126,26 +133,12 @@ class TicketSearchService:
         # Step 1: Generate embedding
         query_embedding = await self._databricks.generate_embedding(query)
 
-        # Step 2 & 3: Run both similarity searches in parallel via thread executor
-        # (databricks SQL connector is synchronous)
-        loop = asyncio.get_event_loop()
-
-        ticket_results, doc_results = await asyncio.gather(
-            loop.run_in_executor(
-                None,
-                self._databricks.find_similar_by_embedding,
-                query_embedding,
-                "hive_metastore.embeddings_db.ticket_embeddings",
-                "embedding",
-                "Id",
-                top_k,
-            ),
-            loop.run_in_executor(
-                None,
-                self._databricks.find_similar_documentation,
-                query_embedding,
-                5,
-            ),
+        # Step 2 & 3: Run both similarity searches using local vector store
+        ticket_results = self._vector_store.find_similar_by_embedding(
+            query_embedding, top_k=top_k
+        )
+        doc_results = self._vector_store.find_similar_documentation(
+            query_embedding, top_k=5
         )
 
         similar_tickets = [
@@ -216,16 +209,9 @@ class TicketSearchService:
         # Step 3: Generate embedding on-the-fly
         embedding = await self._databricks.generate_embedding(search_text)
 
-        # Step 4: Find similar tickets (request top_k + 1 to exclude self)
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            None,
-            self._databricks.find_similar_by_embedding,
-            embedding,
-            "hive_metastore.embeddings_db.ticket_embeddings",
-            "embedding",
-            "Id",
-            top_k + 1,
+        # Step 4: Find similar tickets using local vector store (request top_k + 1 to exclude self)
+        results = self._vector_store.find_similar_by_embedding(
+            embedding, top_k=top_k + 1
         )
 
         # Filter out the source ticket itself
