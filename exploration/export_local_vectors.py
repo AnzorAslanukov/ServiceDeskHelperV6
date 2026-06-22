@@ -26,7 +26,6 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from exploration.athena_auth import get_databricks_connection  # noqa: E402
 
 
 OUTPUT_DIR = PROJECT_ROOT / "data" / "vectors"
@@ -73,7 +72,9 @@ def export_documentation(connection) -> None:
 
             # Parse embedding
             raw_embedding = row_dict["embeddings"]
-            if isinstance(raw_embedding, str):
+            if isinstance(raw_embedding, np.ndarray):
+                embedding = raw_embedding.tolist()
+            elif isinstance(raw_embedding, str):
                 embedding = json.loads(raw_embedding)
             elif isinstance(raw_embedding, list):
                 embedding = raw_embedding
@@ -155,7 +156,9 @@ def export_tickets(connection) -> None:
 
             # Parse embedding
             raw_embedding = row_dict["embedding"]
-            if isinstance(raw_embedding, str):
+            if isinstance(raw_embedding, np.ndarray):
+                embedding = raw_embedding.tolist()
+            elif isinstance(raw_embedding, str):
                 try:
                     embedding = json.loads(raw_embedding)
                 except json.JSONDecodeError:
