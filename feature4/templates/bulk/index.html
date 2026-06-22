@@ -59,6 +59,11 @@
                 <span class="bulk-triage-slider"></span>
                 <span class="bulk-triage-label" id="bulkTriageLabel">Triage Rules: ON</span>
             </label>
+            <label class="bulk-triage-toggle" title="When ON, the LLM advisor (Claude Sonnet 4.5 + RAG) runs alongside TF-IDF for each ticket. Results stream in via WebSocket after the initial predictions.">
+                <input type="checkbox" id="bulkLLMCheckbox" onchange="bulkToggleLLMAdvisor(this)">
+                <span class="bulk-triage-slider"></span>
+                <span class="bulk-triage-label" id="bulkLLMLabel">LLM Advisor: OFF</span>
+            </label>
             <button class="btn btn-success" onclick="bulkAssignSelected()" id="btnAssign" disabled>
                 ✅ Assign Selected
             </button>

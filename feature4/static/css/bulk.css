@@ -1502,3 +1502,106 @@
     background: #38A169;
     border-color: #38A169;
 }
+
+/* ── LLM Advisor Styles ─────────────────────────────────────────────── */
+
+.bulk-llm-section {
+    margin-top: 12px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    border-left: 4px solid #8b5cf6;
+    background: rgba(139, 92, 246, 0.05);
+}
+
+.bulk-llm-section.llm-conf-high {
+    border-left-color: #10b981;
+    background: rgba(16, 185, 129, 0.05);
+}
+
+.bulk-llm-section.llm-conf-medium {
+    border-left-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.05);
+}
+
+.bulk-llm-section.llm-conf-low {
+    border-left-color: #8b5cf6;
+    background: rgba(139, 92, 246, 0.05);
+}
+
+.bulk-llm-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.bulk-llm-icon {
+    font-size: 1.1em;
+}
+
+.bulk-llm-group {
+    font-weight: 600;
+    color: var(--text-primary, #e2e8f0);
+}
+
+.bulk-llm-conf-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.bulk-llm-conf-badge.llm-conf-high {
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+}
+
+.bulk-llm-conf-badge.llm-conf-medium {
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+}
+
+.bulk-llm-conf-badge.llm-conf-low {
+    background: rgba(139, 92, 246, 0.2);
+    color: #a78bfa;
+}
+
+.bulk-llm-latency {
+    font-size: 0.75rem;
+    color: var(--text-muted, #64748b);
+}
+
+.bulk-llm-rationale {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #94a3b8);
+    line-height: 1.5;
+    margin-bottom: 8px;
+    white-space: pre-wrap;
+}
+
+.bulk-llm-stats {
+    font-size: 0.75rem;
+    color: var(--text-muted, #64748b);
+    margin-bottom: 8px;
+}
+
+.bulk-llm-use-btn {
+    margin-top: 4px;
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border: 1px solid #8b5cf6;
+    border-radius: 4px;
+    background: transparent;
+    color: #a78bfa;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.bulk-llm-use-btn:hover {
+    background: rgba(139, 92, 246, 0.15);
+    color: #c4b5fd;
+}

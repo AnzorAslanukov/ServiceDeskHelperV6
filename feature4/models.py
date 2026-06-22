@@ -148,6 +148,55 @@ class BulkRecommendRequest(BaseModel):
             "This is a per-user setting that does not affect other users' recommendations."
         ),
     )
+    use_llm_advisor: bool = Field(
+        default=False,
+        description=(
+            "Whether to also run the LLM advisor (RAG pipeline with Claude Sonnet 4.5) "
+            "for each ticket. When enabled, each ticket gets both a TF-IDF prediction "
+            "(instant) and an LLM advisor recommendation with rationale (~3-5s per ticket). "
+            "The LLM results are streamed via WebSocket as they complete."
+        ),
+    )
+
+
+class LLMAdvisorRecommendation(BaseModel):
+    """LLM advisor recommendation with rationale explanation."""
+
+    support_group_name: str = Field(
+        description="Recommended support group name from the LLM advisor.",
+    )
+    support_group_guid: str = Field(
+        default="",
+        description="GUID for the recommended support group.",
+    )
+    priority: int | None = Field(
+        default=None,
+        description="Recommended priority (1-3 for IR tickets).",
+    )
+    rationale: str = Field(
+        default="",
+        description="Human-readable explanation for the recommendation.",
+    )
+    confidence_signal: str = Field(
+        default="low",
+        description="Confidence signal: 'high', 'medium', or 'low' based on context richness.",
+    )
+    latency_ms: float = Field(
+        default=0.0,
+        description="Time taken for the LLM advisor pipeline in milliseconds.",
+    )
+    kg_facts_used: int = Field(
+        default=0,
+        description="Number of knowledge graph facts used in context.",
+    )
+    docs_used: int = Field(
+        default=0,
+        description="Number of documentation snippets used in context.",
+    )
+    similar_tickets_used: int = Field(
+        default=0,
+        description="Number of similar tickets used in context.",
+    )
 
 
 class TicketRecommendation(BaseModel):
@@ -157,6 +206,11 @@ class TicketRecommendation(BaseModel):
     ticket_info: TicketInfo = Field(description="Summary of the ticket.")
     recommendation: AssignmentRecommendation = Field(
         description="AI-generated assignment recommendation.",
+    )
+    llm_advisor: LLMAdvisorRecommendation | None = Field(
+        default=None,
+        description="Optional LLM advisor recommendation with rationale. "
+        "Only populated when use_llm_advisor=True in the request.",
     )
     success: bool = Field(default=True, description="Whether recommendation generation succeeded.")
     error: str | None = Field(default=None, description="Error message if generation failed.")

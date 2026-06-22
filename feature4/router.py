@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from feature4.dependencies import get_bulk_assignment_service, get_ws_manager
+from feature4.dependencies import get_bulk_assignment_service, get_llm_advisor_service, get_ws_manager
 from feature4.models import (
     BulkAssignRequest,
     BulkAssignResponse,
@@ -326,12 +326,32 @@ async def bulk_recommend(
             rec_result_event(ticket_id, success, current, total, user_id)
         )
 
+    # LLM advisor callback: broadcast results via WebSocket as they arrive
+    async def on_llm_result(ticket_id: str, llm_result_dict: dict) -> None:
+        await manager.broadcast_all({
+            "event": "llm_result",
+            "ticket_id": ticket_id,
+            "user_id": user_id,
+            "llm_advisor": llm_result_dict,
+        })
+
+    # Get LLM advisor service if requested (lazy-loaded)
+    llm_advisor_svc = None
+    if request.use_llm_advisor:
+        try:
+            llm_advisor_svc = get_llm_advisor_service()
+        except Exception as e:
+            logger.warning("Failed to initialize LLM advisor: %s", e)
+
     try:
         result = await service.batch_recommend(
             ticket_ids=request.ticket_ids,
             on_processing=on_processing,
             on_result=on_result,
             use_triage=request.use_triage,
+            use_llm_advisor=request.use_llm_advisor,
+            llm_advisor_service=llm_advisor_svc,
+            on_llm_result=on_llm_result,
         )
 
         # Broadcast rec_complete so all clients clear progress states

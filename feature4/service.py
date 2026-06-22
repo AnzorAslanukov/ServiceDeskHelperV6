@@ -582,6 +582,9 @@ class BulkAssignmentService:
         on_processing: Callable[[str, int, int], Awaitable[None]] | None = None,
         on_result: Callable[[str, bool, int, int], Awaitable[None]] | None = None,
         use_triage: bool = True,
+        use_llm_advisor: bool = False,
+        llm_advisor_service=None,
+        on_llm_result: Callable[[str, dict], Awaitable[None]] | None = None,
     ) -> BulkRecommendResponse:
         """
         Generate classifier recommendations for a batch of tickets.
@@ -598,6 +601,10 @@ class BulkAssignmentService:
             use_triage: Whether to apply triage rules before the classifier.
                 When False, only the TF-IDF classifier is used. This is a
                 per-user setting passed through from the request.
+            use_llm_advisor: Whether to also run the LLM advisor for each ticket.
+            llm_advisor_service: LLMAdvisorService instance (injected from router).
+            on_llm_result: Optional async callback(ticket_id, llm_result_dict)
+                called when LLM advisor completes for a ticket.
 
         Returns:
             BulkRecommendResponse with per-ticket recommendations.
@@ -648,11 +655,66 @@ class BulkAssignmentService:
                 if on_result:
                     await on_result(ticket_id, False, current, total)
 
+        # ── LLM Advisor (background, non-blocking) ──
+        if use_llm_advisor and llm_advisor_service:
+            asyncio.create_task(
+                self._run_llm_advisor_batch(
+                    recommendations=recommendations,
+                    llm_advisor_service=llm_advisor_service,
+                    on_llm_result=on_llm_result,
+                )
+            )
+
         return BulkRecommendResponse(
             recommendations=recommendations,
             total=len(recommendations),
             failed=failed_count,
         )
+
+    async def _run_llm_advisor_batch(
+        self,
+        recommendations: list[TicketRecommendation],
+        llm_advisor_service,
+        on_llm_result: Callable[[str, dict], Awaitable[None]] | None = None,
+    ) -> None:
+        """
+        Run LLM advisor for each ticket in the background.
+
+        Results are streamed via the on_llm_result callback (WebSocket event).
+        This runs after the TF-IDF results have already been returned to the user.
+        """
+        from feature4.models import LLMAdvisorRecommendation
+
+        for rec in recommendations:
+            if not rec.success:
+                continue
+            try:
+                result = await llm_advisor_service.advise(rec.ticket_info)
+                llm_rec = LLMAdvisorRecommendation(
+                    support_group_name=result.support_group_name,
+                    support_group_guid=result.support_group_guid,
+                    priority=result.priority,
+                    rationale=result.rationale,
+                    confidence_signal=result.confidence_signal,
+                    latency_ms=result.latency_ms,
+                    kg_facts_used=result.kg_facts_used,
+                    docs_used=result.docs_used,
+                    similar_tickets_used=result.similar_tickets_used,
+                )
+                # Attach to the recommendation object
+                rec.llm_advisor = llm_rec
+
+                # Notify via WebSocket
+                if on_llm_result:
+                    await on_llm_result(rec.ticket_id, llm_rec.model_dump())
+
+            except Exception as exc:
+                logger.warning(
+                    "LLM advisor failed for %s: %s", rec.ticket_id, exc
+                )
+
+            # Rate limiting: 1 second between LLM calls
+            await asyncio.sleep(1.0)
 
     # ── Bulk Assignment ───────────────────────────────────────────────
 
