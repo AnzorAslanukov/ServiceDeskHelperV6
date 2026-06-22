@@ -92,12 +92,13 @@ class LocalVectorStore:
             return
 
         logger.info("Loading ticket vectors from %s", embeddings_path)
-        self._ticket_embeddings = np.load(str(embeddings_path))
+        self._ticket_embeddings = np.load(str(embeddings_path), mmap_mode="r")
         with open(metadata_path, "r", encoding="utf-8") as f:
             self._ticket_metadata = json.load(f)
 
         # Precompute norms for fast cosine similarity
-        self._ticket_norms = np.linalg.norm(self._ticket_embeddings, axis=1)
+        # Use float32 to save memory; compute in chunks if needed
+        self._ticket_norms = np.linalg.norm(self._ticket_embeddings, axis=1).astype(np.float32)
         self._ticket_norms[self._ticket_norms == 0] = 1.0
 
         # Build ID lookup index
