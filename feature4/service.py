@@ -683,11 +683,26 @@ class BulkAssignmentService:
 
         for assignment in assignments:
             try:
+                # Convert numeric priority to string name for SR tickets
+                # (Athena SR endpoint rejects bare integers; expects "Low"/"Medium"/etc.)
+                priority = assignment.priority
+                if priority is not None and assignment.ticket_id.upper().startswith("SR"):
+                    if isinstance(priority, int) or (
+                        isinstance(priority, str) and priority.isdigit()
+                    ):
+                        sr_priority_map = {
+                            1: "Immediate",
+                            2: "High",
+                            3: "Medium",
+                            4: "Low",
+                        }
+                        priority = sr_priority_map.get(int(priority), "Medium")
+
                 updated = await self._athena.update_ticket(
                     ticket_id=assignment.ticket_id,
                     entity_id=assignment.entity_id,
                     tier_queue_guid=assignment.tier_queue_guid,
-                    priority=assignment.priority,
+                    priority=priority,
                 )
 
                 # Extract updated values from response

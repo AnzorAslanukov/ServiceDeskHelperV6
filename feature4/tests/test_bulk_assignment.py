@@ -2228,3 +2228,161 @@ def test_resolve_ticket_request_model_valid():
     )
     assert req.ticket_id == "IR10001"
     assert req.resolution_description == "Resolved via maintenance."
+
+
+# ── SR Priority Conversion Tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_assign_sr_ticket_converts_numeric_priority_to_string(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """SR tickets with numeric priority should be converted to string name."""
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "PennChart"},
+        "priority": {"id": "536beaf3-62a8-5dd0-248a-39c2bf86d3bc", "name": "High"},
+    }
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="SR20001",
+            entity_id="eid-sr-20001",
+            tier_queue_guid="some-sr-guid",
+            tier_queue_name="PennChart",
+            priority=2,  # Numeric from LLM — should become "High"
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments)
+
+    mock_athena_client.update_ticket.assert_called_once_with(
+        ticket_id="SR20001",
+        entity_id="eid-sr-20001",
+        tier_queue_guid="some-sr-guid",
+        priority="High",
+    )
+
+
+@pytest.mark.asyncio
+async def test_assign_sr_ticket_converts_string_digit_priority(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """SR tickets with string digit priority (e.g., '3') should be converted."""
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "EUS"},
+        "priority": {"name": "Medium"},
+    }
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="SR20001",
+            entity_id="eid-sr-20001",
+            tier_queue_guid="some-sr-guid",
+            priority="3",  # String digit — should become "Medium"
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments)
+
+    mock_athena_client.update_ticket.assert_called_once_with(
+        ticket_id="SR20001",
+        entity_id="eid-sr-20001",
+        tier_queue_guid="some-sr-guid",
+        priority="Medium",
+    )
+
+
+@pytest.mark.asyncio
+async def test_assign_sr_ticket_preserves_string_priority(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """SR tickets with string priority (e.g., 'High') should pass through unchanged."""
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "EUS"},
+        "priority": {"name": "High"},
+    }
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="SR20001",
+            entity_id="eid-sr-20001",
+            tier_queue_guid="some-sr-guid",
+            priority="High",  # Already a string name — pass through
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments)
+
+    mock_athena_client.update_ticket.assert_called_once_with(
+        ticket_id="SR20001",
+        entity_id="eid-sr-20001",
+        tier_queue_guid="some-sr-guid",
+        priority="High",
+    )
+
+
+@pytest.mark.asyncio
+async def test_assign_ir_ticket_keeps_numeric_priority(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """IR tickets with numeric priority should NOT be converted."""
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "EUS"},
+        "priority": 2,
+    }
+
+    assignments = [
+        TicketAssignment(
+            ticket_id="IR10001",
+            entity_id="eid-ir-10001",
+            tier_queue_guid="some-ir-guid",
+            priority=2,  # Numeric for IR — should stay as 2
+        ),
+    ]
+
+    await bulk_assignment_service.assign_tickets(assignments)
+
+    mock_athena_client.update_ticket.assert_called_once_with(
+        ticket_id="IR10001",
+        entity_id="eid-ir-10001",
+        tier_queue_guid="some-ir-guid",
+        priority=2,
+    )
+
+
+@pytest.mark.asyncio
+async def test_assign_sr_ticket_priority_mapping_all_values(
+    bulk_assignment_service: BulkAssignmentService,
+    mock_athena_client,
+):
+    """All numeric priority values should map correctly for SR tickets."""
+    mock_athena_client.update_ticket.return_value = {
+        "tierQueue": {"name": "Service Desk"},
+        "priority": {"name": "Medium"},
+    }
+
+    expected_map = {1: "Immediate", 2: "High", 3: "Medium", 4: "Low"}
+
+    for numeric, expected_str in expected_map.items():
+        mock_athena_client.update_ticket.reset_mock()
+
+        assignments = [
+            TicketAssignment(
+                ticket_id="SR20001",
+                entity_id="eid-sr-20001",
+                tier_queue_guid="some-guid",
+                priority=numeric,
+            ),
+        ]
+
+        await bulk_assignment_service.assign_tickets(assignments)
+
+        call_kwargs = mock_athena_client.update_ticket.call_args[1]
+        assert call_kwargs["priority"] == expected_str, (
+            f"Priority {numeric} should map to '{expected_str}', "
+            f"got '{call_kwargs['priority']}'"
+        )
