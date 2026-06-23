@@ -148,15 +148,6 @@ class BulkRecommendRequest(BaseModel):
             "This is a per-user setting that does not affect other users' recommendations."
         ),
     )
-    use_llm_advisor: bool = Field(
-        default=False,
-        description=(
-            "Whether to also run the LLM advisor (RAG pipeline with Claude Sonnet 4.5) "
-            "for each ticket. When enabled, each ticket gets both a TF-IDF prediction "
-            "(instant) and an LLM advisor recommendation with rationale (~3-5s per ticket). "
-            "The LLM results are streamed via WebSocket as they complete."
-        ),
-    )
 
 
 class LLMAdvisorRecommendation(BaseModel):
@@ -207,11 +198,6 @@ class TicketRecommendation(BaseModel):
     recommendation: AssignmentRecommendation = Field(
         description="AI-generated assignment recommendation.",
     )
-    llm_advisor: LLMAdvisorRecommendation | None = Field(
-        default=None,
-        description="Optional LLM advisor recommendation with rationale. "
-        "Only populated when use_llm_advisor=True in the request.",
-    )
     success: bool = Field(default=True, description="Whether recommendation generation succeeded.")
     error: str | None = Field(default=None, description="Error message if generation failed.")
 
@@ -225,6 +211,27 @@ class BulkRecommendResponse(BaseModel):
     )
     total: int = Field(default=0, description="Total recommendations generated.")
     failed: int = Field(default=0, description="Number of tickets that failed recommendation.")
+
+
+# ── LLM Advisor Models (per-ticket) ──────────────────────────────────
+
+
+class LLMAdviseRequest(BaseModel):
+    """Request to get an LLM advisor recommendation for a single ticket."""
+
+    ticket_id: str = Field(..., description="Ticket ID to advise on.")
+
+
+class LLMAdviseResponse(BaseModel):
+    """Response from the per-ticket LLM advisor endpoint."""
+
+    ticket_id: str = Field(description="Ticket ID this advice is for.")
+    success: bool = Field(description="Whether the LLM advisor succeeded.")
+    recommendation: LLMAdvisorRecommendation | None = Field(
+        default=None,
+        description="LLM advisor recommendation (None if failed).",
+    )
+    error: str | None = Field(default=None, description="Error message if failed.")
 
 
 # ── Assignment Models ─────────────────────────────────────────────────

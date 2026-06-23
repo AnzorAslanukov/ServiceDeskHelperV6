@@ -33,6 +33,9 @@ from feature4.models import (
     BulkRecommendResponse,
     ClaimBatchRequest,
     ClaimBatchResponse,
+    LLMAdviseRequest,
+    LLMAdviseResponse,
+    LLMAdvisorRecommendation,
     LockRequest,
     QueueRequest,
     QueueResponse,
@@ -326,32 +329,12 @@ async def bulk_recommend(
             rec_result_event(ticket_id, success, current, total, user_id)
         )
 
-    # LLM advisor callback: broadcast results via WebSocket as they arrive
-    async def on_llm_result(ticket_id: str, llm_result_dict: dict) -> None:
-        await manager.broadcast_all({
-            "event": "llm_result",
-            "ticket_id": ticket_id,
-            "user_id": user_id,
-            "llm_advisor": llm_result_dict,
-        })
-
-    # Get LLM advisor service if requested (lazy-loaded)
-    llm_advisor_svc = None
-    if request.use_llm_advisor:
-        try:
-            llm_advisor_svc = get_llm_advisor_service()
-        except Exception as e:
-            logger.warning("Failed to initialize LLM advisor: %s", e)
-
     try:
         result = await service.batch_recommend(
             ticket_ids=request.ticket_ids,
             on_processing=on_processing,
             on_result=on_result,
             use_triage=request.use_triage,
-            use_llm_advisor=request.use_llm_advisor,
-            llm_advisor_service=llm_advisor_svc,
-            on_llm_result=on_llm_result,
         )
 
         # Broadcast rec_complete so all clients clear progress states
@@ -435,6 +418,71 @@ async def resolve_ticket(
         await manager.broadcast_all(resolve_event(result.ticket_id, request.user_id))
 
     return result
+
+
+# ── LLM Advisor (per-ticket) ─────────────────────────────────────────
+
+
+@router.post("/llm-advise", response_model=LLMAdviseResponse)
+async def llm_advise_ticket(
+    request: LLMAdviseRequest,
+    service: BulkAssignmentService = Depends(get_bulk_assignment_service),
+) -> LLMAdviseResponse:
+    """
+    Get an LLM advisor recommendation for a single ticket.
+
+    Fetches the ticket from Athena, runs the RAG pipeline (knowledge graph +
+    vector search + Claude Sonnet 4.5), and returns a recommendation with
+    rationale. This is a per-ticket on-demand action triggered by the user
+    clicking "Ask LLM" on a specific ticket.
+    """
+    from src.services.assignment import AssignmentService
+    from feature4.dependencies import get_llm_advisor_service
+
+    ticket_id = request.ticket_id
+
+    try:
+        llm_advisor_svc = get_llm_advisor_service()
+    except Exception as e:
+        logger.warning("Failed to initialize LLM advisor: %s", e)
+        return LLMAdviseResponse(
+            ticket_id=ticket_id,
+            success=False,
+            error=f"LLM advisor unavailable: {e}",
+        )
+
+    try:
+        # Fetch ticket info by running the assignment pipeline (same as batch recommend)
+        from feature4.dependencies import _get_assignment_service
+        assignment_svc = _get_assignment_service()
+        assignment_result = await assignment_svc.recommend_assignment(ticket_id)
+        ticket_info = assignment_result.ticket
+
+        # Run the LLM advisor
+        result = await llm_advisor_svc.advise(ticket_info)
+
+        return LLMAdviseResponse(
+            ticket_id=ticket_id,
+            success=True,
+            recommendation=LLMAdvisorRecommendation(
+                support_group_name=result.support_group_name,
+                support_group_guid=result.support_group_guid,
+                priority=result.priority,
+                rationale=result.rationale,
+                confidence_signal=result.confidence_signal,
+                latency_ms=result.latency_ms,
+                kg_facts_used=result.kg_facts_used,
+                docs_used=result.docs_used,
+                similar_tickets_used=result.similar_tickets_used,
+            ),
+        )
+    except Exception as e:
+        logger.warning("LLM advisor failed for %s: %s", ticket_id, e)
+        return LLMAdviseResponse(
+            ticket_id=ticket_id,
+            success=False,
+            error=str(e),
+        )
 
 
 # ── WebSocket Endpoint ────────────────────────────────────────────────

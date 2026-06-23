@@ -15,7 +15,6 @@ var _bulkSelected = new Set();
 var _bulkBusy = false;
 var _bulkStreamingLoad = false;  // true while WebSocket streaming queue load is in progress
 var _bulkUseTriageRules = true;  // per-user toggle: when true, triage rules are applied before classifier
-var _bulkUseLLMAdvisor = false;  // per-user toggle: when true, LLM advisor runs alongside TF-IDF
 var _bulkLockPending = new Set();  // ticket IDs with in-flight lock/unlock requests
 
 // Support group lists for manual assignment: ticket_type → [{name, guid}, ...]
@@ -307,99 +306,105 @@ function _handleWsEvent(data) {
             _showToast(data.user_id + ' left', 'info');
         }
 
-    // ── LLM Advisor Results ───────────────────────────────────────
-    } else if (event === 'llm_result') {
-        _handleLLMResult(data);
-
     // ── Queue Auto-Refresh Events ─────────────────────────────────
     } else if (event === 'queue_refresh') {
         _handleQueueRefresh(data);
     }
 }
 
-/**
- * Handle an LLM advisor result arriving via WebSocket.
- * Updates the recommendation panel for the specific ticket with the LLM rationale.
- */
-function _handleLLMResult(data) {
-    var ticketId = data.ticket_id;
-    var llmAdvisor = data.llm_advisor;
-    if (!ticketId || !llmAdvisor) return;
+// ── Per-Ticket LLM Advisor ────────────────────────────────────────────
 
-    // Store LLM result on the recommendation object
-    if (_bulkRecs[ticketId]) {
-        _bulkRecs[ticketId].llm_advisor = llmAdvisor;
+/**
+ * Ask the LLM advisor for a single ticket's support group recommendation.
+ * Called when the user clicks "🧠 Ask LLM" in a ticket's manual assign form.
+ * On success, replaces the support group dropdown value with the LLM's pick.
+ */
+function bulkAskLLM(ticketId) {
+    var btn = document.getElementById('btnAskLLM_' + ticketId);
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Thinking…';
     }
 
-    // Find the rec row and append LLM advisor info
-    var recRow = document.querySelector('tr[data-rec-for="' + ticketId + '"]');
-    if (recRow) {
-        var panel = recRow.querySelector('.bulk-rec-panel');
-        if (panel) {
-            // Remove existing LLM section if any
-            var existing = panel.querySelector('.bulk-llm-section');
-            if (existing) existing.remove();
+    // Remove any previous LLM result panel
+    var existingPanel = document.getElementById('llmResult_' + ticketId);
+    if (existingPanel) existingPanel.remove();
 
-            // Build LLM advisor section
-            var confClass = 'llm-conf-' + (llmAdvisor.confidence_signal || 'low');
-            var html = '<div class="bulk-llm-section ' + confClass + '">';
+    fetch('/bulk/llm-advise', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_id: ticketId })
+    })
+    .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    })
+    .then(function (data) {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🧠 Ask LLM';
+        }
+
+        if (data.success && data.recommendation) {
+            var llm = data.recommendation;
+
+            // Update the support group dropdown with the LLM's recommendation
+            if (!_bulkOverrides[ticketId]) _bulkOverrides[ticketId] = {};
+            _bulkOverrides[ticketId].tier_queue_name = llm.support_group_name;
+            _bulkOverrides[ticketId].tier_queue_guid = llm.support_group_guid;
+            if (llm.priority) {
+                _bulkOverrides[ticketId].priority = llm.priority;
+            }
+
+            var sgToggle = document.getElementById('sgToggle_' + ticketId);
+            if (sgToggle) {
+                var textSpan = sgToggle.querySelector('.sg-dropdown-toggle-text');
+                if (textSpan) textSpan.textContent = llm.support_group_name;
+                sgToggle.classList.add('sg-dropdown-has-value');
+            }
+            var sgGuidInput = document.getElementById('sgGuid_' + ticketId);
+            if (sgGuidInput) sgGuidInput.value = llm.support_group_guid || '';
+
+            // Render the LLM rationale panel below the button
+            var confClass = 'llm-conf-' + (llm.confidence_signal || 'low');
+            var html = '<div class="bulk-llm-section ' + confClass + '" id="llmResult_' + _escapeHtml(ticketId) + '">';
             html += '<div class="bulk-llm-header">';
             html += '<span class="bulk-llm-icon">🧠</span> ';
             html += '<strong>LLM Advisor:</strong> ';
-            html += '<span class="bulk-llm-group">' + _escapeHtml(llmAdvisor.support_group_name) + '</span>';
-            html += ' <span class="bulk-llm-conf-badge ' + confClass + '">' + _escapeHtml(llmAdvisor.confidence_signal) + '</span>';
-            if (llmAdvisor.latency_ms) {
-                html += ' <span class="bulk-llm-latency">(' + Math.round(llmAdvisor.latency_ms) + 'ms)</span>';
+            html += '<span class="bulk-llm-group">' + _escapeHtml(llm.support_group_name) + '</span>';
+            html += ' <span class="bulk-llm-conf-badge ' + confClass + '">' + _escapeHtml(llm.confidence_signal) + '</span>';
+            if (llm.latency_ms) {
+                html += ' <span class="bulk-llm-latency">(' + Math.round(llm.latency_ms) + 'ms)</span>';
             }
             html += '</div>';
-            if (llmAdvisor.rationale) {
-                html += '<div class="bulk-llm-rationale">' + _escapeHtml(llmAdvisor.rationale) + '</div>';
+            if (llm.rationale) {
+                html += '<div class="bulk-llm-rationale">' + _escapeHtml(llm.rationale) + '</div>';
             }
-            // Context stats
             var stats = [];
-            if (llmAdvisor.kg_facts_used > 0) stats.push(llmAdvisor.kg_facts_used + ' KG facts');
-            if (llmAdvisor.docs_used > 0) stats.push(llmAdvisor.docs_used + ' docs');
-            if (llmAdvisor.similar_tickets_used > 0) stats.push(llmAdvisor.similar_tickets_used + ' similar tickets');
+            if (llm.kg_facts_used > 0) stats.push(llm.kg_facts_used + ' KG facts');
+            if (llm.docs_used > 0) stats.push(llm.docs_used + ' docs');
+            if (llm.similar_tickets_used > 0) stats.push(llm.similar_tickets_used + ' similar tickets');
             if (stats.length > 0) {
                 html += '<div class="bulk-llm-stats">Context: ' + stats.join(', ') + '</div>';
             }
-            // "Use LLM" button to switch to LLM recommendation
-            html += '<button class="btn btn-sm btn-outline bulk-llm-use-btn" ' +
-                'onclick="bulkUseLLMRecommendation(\'' + _escapeHtml(ticketId) + '\')">Use LLM Recommendation</button>';
             html += '</div>';
 
-            panel.insertAdjacentHTML('beforeend', html);
+            // Insert after the Ask LLM button
+            if (btn) btn.insertAdjacentHTML('afterend', html);
+
+            _updateCounts();
+            _showToast('LLM recommends: ' + llm.support_group_name, 'success');
+        } else {
+            _showToast('LLM advisor failed: ' + (data.error || 'Unknown error'), 'error');
         }
-    }
-}
-
-/**
- * Switch to using the LLM advisor's recommendation for a ticket.
- */
-function bulkUseLLMRecommendation(ticketId) {
-    var rec = _bulkRecs[ticketId];
-    if (!rec || !rec.llm_advisor) return;
-
-    var llm = rec.llm_advisor;
-    if (!_bulkOverrides[ticketId]) _bulkOverrides[ticketId] = {};
-    _bulkOverrides[ticketId].tier_queue_name = llm.support_group_name;
-    _bulkOverrides[ticketId].tier_queue_guid = llm.support_group_guid;
-    if (llm.priority) {
-        _bulkOverrides[ticketId].priority = llm.priority;
-    }
-
-    // Update the manual assign dropdown
-    var sgToggle = document.getElementById('sgToggle_' + ticketId);
-    if (sgToggle) {
-        var textSpan = sgToggle.querySelector('.sg-dropdown-toggle-text');
-        if (textSpan) textSpan.textContent = llm.support_group_name;
-        sgToggle.classList.add('sg-dropdown-has-value');
-    }
-    var sgGuidInput = document.getElementById('sgGuid_' + ticketId);
-    if (sgGuidInput) sgGuidInput.value = llm.support_group_guid || '';
-
-    _updateCounts();
-    _showToast('Switched to LLM recommendation for ' + ticketId, 'info');
+    })
+    .catch(function (err) {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🧠 Ask LLM';
+        }
+        _showToast('LLM advisor error: ' + err.message, 'error');
+    });
 }
 
 /**
@@ -672,7 +677,6 @@ function bulkGetRecommendations() {
             ticket_ids: ticketIds,
             user_id: _bulkUserId,
             use_triage: _bulkUseTriageRules,
-            use_llm_advisor: _bulkUseLLMAdvisor,
         })
     })
     .then(function (r) {
@@ -813,13 +817,6 @@ function bulkToggleTriage(checkbox) {
     }
 }
 
-function bulkToggleLLMAdvisor(checkbox) {
-    _bulkUseLLMAdvisor = checkbox.checked;
-    var label = document.getElementById('bulkLLMLabel');
-    if (label) {
-        label.textContent = _bulkUseLLMAdvisor ? 'LLM Advisor: ON' : 'LLM Advisor: OFF';
-    }
-}
 
 // ── Recommendation Progress Styling ───────────────────────────────────
 
@@ -1235,13 +1232,18 @@ function _renderDetailRow(ticket) {
 
         html += '</select></div>';
 
-        // Assign Now button
+        // Assign Now button + Ask LLM button
         html += '<div class="manual-assign-field manual-assign-actions">' +
             '<button class="btn btn-success btn-sm" ' +
             'onclick="bulkManualAssign(\'' + _escapeHtml(ticket.id) + '\')" ' +
             'id="btnManualAssign_' + _escapeHtml(ticket.id) + '" ' +
             'title="Assign this ticket immediately">' +
             '⚡ Assign Now</button>' +
+            '<button class="btn btn-sm bulk-llm-use-btn" ' +
+            'onclick="bulkAskLLM(\'' + _escapeHtml(ticket.id) + '\')" ' +
+            'id="btnAskLLM_' + _escapeHtml(ticket.id) + '" ' +
+            'title="Get an LLM-powered support group recommendation for this ticket">' +
+            '🧠 Ask LLM</button>' +
             '</div>';
 
         html += '</div>';  // close manual-assign-fields
