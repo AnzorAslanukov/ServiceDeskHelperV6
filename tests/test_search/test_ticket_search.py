@@ -669,26 +669,27 @@ async def test_phone_search_contains_operator_matches_partial(
 
 
 @pytest.mark.asyncio
-async def test_phone_search_recomputes_pagination(
+async def test_phone_search_filters_server_results(
     search_service: TicketSearchService,
     mock_athena_client,
 ):
-    """Pagination must reflect the client-side filtered set, not raw Athena counts."""
+    """Phone search applies client-side filtering to server results."""
     matching = [_make_phone_ticket(f"IR_M{i}", "2155551234") for i in range(3)]
     non_matching = [_make_phone_ticket(f"IR_N{i}", "2155559999") for i in range(2)]
     mock_athena_client.search_tickets.return_value = {
         "results": matching + non_matching,
-        "total": 999,  # bogus server-side total that must be overridden
-        "page": 1, "page_size": 100, "has_more": False,
+        "total": 5, "page": 1, "page_size": 50, "has_more": False,
     }
 
     result = await search_service.search_by_field(
-        field="contactMethod", value="215-555-1234", page=1, page_size=2,
+        field="contactMethod", value="215-555-1234", page=1, page_size=50,
     )
 
-    assert result.total == 3            # only the 3 real matches
-    assert len(result.tickets) == 2     # page_size slice
-    assert result.has_more is True      # 1 match left on page 2
+    # Only the 3 matches with matching digits are returned
+    assert result.total == 3
+    assert len(result.tickets) == 3
+    assert all(t.id.startswith("IR_M") for t in result.tickets)
+    assert result.has_more is False
 
 
 @pytest.mark.asyncio

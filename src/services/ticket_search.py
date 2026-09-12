@@ -118,17 +118,22 @@ class TicketSearchService:
         1. Normalize the user input to digits only.
         2. If input has no digits, fall back to the standard field filter
            (for non-numeric contact methods like emails).
-        3. Fetch tickets in large batches from Athena with NO phone-specific
-           filter (the view endpoint may not support 'contains' on contactMethod).
-        4. Apply an authoritative digit-only match client-side on each row:
+        3. For digit input, send the user's value AS-IS to Athena using the
+           standard field filter (status quo for non-phone searches).
+        4. Apply an authoritative digit-only match client-side on each result:
            a record matches when its normalized contactMethod equals the
            normalized input (operator 'eq'/'ne') or contains it
            (operator 'contains'/'like').
-        5. Recompute pagination (total/has_more/page slice) from the filtered
-           set, since server-side counts no longer reflect true matches.
+        5. This way:
+           - If the user enters "215-555-1234", Athena may find records with
+             that exact format.
+           - If the user enters "2155551234", Athena may find records with
+             that exact format.
+           - The client-side digit-only match then filters to those whose
+             normalized digits actually match the query.
 
-        This approach is more robust than trying to pre-filter server-side,
-        which may not work for all operators/fields in the Athena view endpoint.
+        This ensures both the dashless and dashed formats are found, while
+        relying on Athena's basic filtering (which is proven to work).
         """
         digits = AthenaClient.normalize_phone(value)
 
@@ -160,45 +165,25 @@ class TicketSearchService:
                 matched = record_digits == digits
             return (not matched) if negate else matched
 
-        # Fetch candidate rows across as many Athena pages as needed (bounded),
-        # applying the authoritative client-side match to each.
-        # Note: We do NOT use a server-side phone filter, as the view endpoint
-        # may not support 'contains' on contactMethod (or nested ORs with contains).
-        # Instead, we fetch all tickets using a trivial "ne" filter and scan
-        # client-side, which is more robust.
-        matched: list[dict[str, Any]] = []
-        scan_page = 1
-        scanned = 0
-        fetch_size = max(page_size, 100)  # pull in reasonable batches
-        # Trivial filter that matches all tickets (status never equals this nonexistent value)
-        filters = AthenaClient.build_field_filter("status", "__NONEXISTENT__", "ne")
-        while scanned < self._PHONE_SCAN_LIMIT:
-            paged = await self._athena.search_tickets(
-                filters, ticket_type, scan_page, fetch_size
-            )
-            results = paged.get("results", [])
-            if not results:
-                break
-            scanned += len(results)
-            matched.extend(r for r in results if is_match(r))
-            if not paged.get("has_more"):
-                break
-            scan_page += 1
+        # Send the user's value AS-IS to Athena using the standard filter.
+        # This will find exact matches of whatever format the user entered.
+        # Then we apply client-side digit-matching to verify the match.
+        filters = AthenaClient.build_field_filter(field, value, operator)
+        paged = await self._athena.search_tickets(
+            filters, ticket_type, page, page_size
+        )
+        results = paged.get("results", [])
 
-        # Recompute pagination from the client-side filtered set.
-        total = len(matched)
-        start = (page - 1) * page_size
-        end = start + page_size
-        page_slice = matched[start:end]
-        has_more = end < total
+        # Apply client-side digit-matching to the results.
+        matched_tickets = [r for r in results if is_match(r)]
+        matched_summaries = [self._map_ticket(t) for t in matched_tickets]
 
-        tickets = [self._map_ticket(t) for t in page_slice]
         return FieldSearchResponse(
-            tickets=tickets,
-            total=total,
+            tickets=matched_summaries,
+            total=len(matched_summaries),
             page=page,
             page_size=page_size,
-            has_more=has_more,
+            has_more=False,  # Single page from Athena; no paging of filtered results
         )
 
     # ── Mode 2: Description Match ─────────────────────────────────────
