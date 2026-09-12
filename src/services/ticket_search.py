@@ -166,43 +166,30 @@ class TicketSearchService:
             return (not matched) if negate else matched
 
         # Search for BOTH formats: dashless AND dashed (XXX-XXX-XXXX).
-        # This ensures we find records regardless of how they're stored.
-        # We use a nested OR filter on the contactMethod field with two conditions:
-        # 1. contactMethod eq <dashless_digits>
-        # 2. contactMethod eq <dashed_format>
-        # Then client-side matching verifies the actual digit match.
+        # Athena's view endpoint may not support OR filters on contactMethod,
+        # so we do TWO separate queries and merge results client-side.
         dashless = digits
         dashed = AthenaClient.format_phone_with_dashes(digits)
 
-        # Build OR filter with two branches: one for dashless, one for dashed
-        or_filters = [
-            {
-                "condition": "and",
-                "property": field,
-                "operator": "eq",
-                "value": dashless,
-            },
-            {
-                "condition": "and",
-                "property": field,
-                "operator": "eq",
-                "value": dashed,
-            },
-        ]
-
-        filters = [
-            {
-                "condition": "and",
-                "filters": [
-                    {"condition": "or", "filters": or_filters},
-                ],
-            }
-        ]
-
-        paged = await self._athena.search_tickets(
-            filters, ticket_type, page, page_size
+        # Query 1: Search for dashless format
+        filter1 = AthenaClient.build_field_filter(field, dashless, "eq")
+        paged1 = await self._athena.search_tickets(
+            filter1, ticket_type, 1, page_size
         )
-        results = paged.get("results", [])
+        results = list(paged1.get("results", []))
+
+        # Query 2: Search for dashed format (if different from dashless)
+        if dashed != dashless:
+            filter2 = AthenaClient.build_field_filter(field, dashed, "eq")
+            paged2 = await self._athena.search_tickets(
+                filter2, ticket_type, 1, page_size
+            )
+            results2 = paged2.get("results", [])
+            # Merge results, avoiding duplicates by ID
+            existing_ids = {r.get("id") for r in results}
+            for r in results2:
+                if r.get("id") not in existing_ids:
+                    results.append(r)
 
         # Apply client-side digit-matching to the results.
         matched_tickets = [r for r in results if is_match(r)]

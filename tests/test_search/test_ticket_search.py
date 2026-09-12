@@ -47,7 +47,7 @@ async def test_search_by_field_returns_mapped_tickets(
     assert result.tickets[0].status == "Active"
     assert result.tickets[0].affected_user == "John Smith"
     assert result.tickets[0].support_group == "EUS\\HUP"
-    mock_athena_client.search_tickets.assert_called_once()
+    assert mock_athena_client.search_tickets.call_count == 2  # Phone search: 2 calls
 
 
 @pytest.mark.asyncio
@@ -903,3 +903,4 @@ def test_map_ticket_location_view_endpoint_format():
     result = TicketSearchService._map_ticket(raw)
     # GUID lookup resolves to full path; locationValue is fallback only if GUID not found
     assert result.location == "LGH\\Downtown Outpatient Pavilion (DOP)"
+
