@@ -114,18 +114,21 @@ class TicketSearchService:
         """
         Search a phone-number field, ignoring dashes/separators on both sides.
 
-        Strategy (Option A):
+        Strategy:
         1. Normalize the user input to digits only.
-        2. Query Athena with a broad, separator-tolerant ``contains`` filter to
-           narrow candidates server-side.
-        3. Apply an authoritative digit-only match client-side: a record matches
-           when its normalized ``contactMethod`` equals the normalized input
-           (operator 'eq'/'ne') or contains it (operator 'contains'/'like').
-        4. Recompute pagination (total/has_more/page slice) from the filtered
+        2. If input has no digits, fall back to the standard field filter
+           (for non-numeric contact methods like emails).
+        3. Fetch tickets in large batches from Athena with NO phone-specific
+           filter (the view endpoint may not support 'contains' on contactMethod).
+        4. Apply an authoritative digit-only match client-side on each row:
+           a record matches when its normalized contactMethod equals the
+           normalized input (operator 'eq'/'ne') or contains it
+           (operator 'contains'/'like').
+        5. Recompute pagination (total/has_more/page slice) from the filtered
            set, since server-side counts no longer reflect true matches.
 
-        If the input has no digits, fall back to a plain field filter so
-        non-numeric contact methods (e.g. an email) still work.
+        This approach is more robust than trying to pre-filter server-side,
+        which may not work for all operators/fields in the Athena view endpoint.
         """
         digits = AthenaClient.normalize_phone(value)
 
@@ -157,15 +160,18 @@ class TicketSearchService:
                 matched = record_digits == digits
             return (not matched) if negate else matched
 
-        # Broad server-side pre-filter to narrow the candidate set.
-        filters = AthenaClient.build_phone_filter(digits, field)
-
         # Fetch candidate rows across as many Athena pages as needed (bounded),
         # applying the authoritative client-side match to each.
+        # Note: We do NOT use a server-side phone filter, as the view endpoint
+        # may not support 'contains' on contactMethod (or nested ORs with contains).
+        # Instead, we fetch all tickets using a trivial "ne" filter and scan
+        # client-side, which is more robust.
         matched: list[dict[str, Any]] = []
         scan_page = 1
         scanned = 0
         fetch_size = max(page_size, 100)  # pull in reasonable batches
+        # Trivial filter that matches all tickets (status never equals this nonexistent value)
+        filters = AthenaClient.build_field_filter("status", "__NONEXISTENT__", "ne")
         while scanned < self._PHONE_SCAN_LIMIT:
             paged = await self._athena.search_tickets(
                 filters, ticket_type, scan_page, fetch_size
