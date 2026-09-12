@@ -360,6 +360,16 @@ class AthenaClient:
         ]
 
     @staticmethod
+    def format_phone_with_dashes(digits: str) -> str:
+        """
+        Format a digit-only phone number into the standard US format XXX-XXX-XXXX.
+        If fewer than 10 digits, returns as-is (can't format).
+        """
+        if len(digits) != 10:
+            return digits  # Not a standard 10-digit number
+        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+
+    @staticmethod
     def normalize_phone(value: str) -> str:
         """
         Reduce a phone number to digits only, stripping all separators.

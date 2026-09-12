@@ -165,10 +165,40 @@ class TicketSearchService:
                 matched = record_digits == digits
             return (not matched) if negate else matched
 
-        # Send the user's value AS-IS to Athena using the standard filter.
-        # This will find exact matches of whatever format the user entered.
-        # Then we apply client-side digit-matching to verify the match.
-        filters = AthenaClient.build_field_filter(field, value, operator)
+        # Search for BOTH formats: dashless AND dashed (XXX-XXX-XXXX).
+        # This ensures we find records regardless of how they're stored.
+        # We use a nested OR filter on the contactMethod field with two conditions:
+        # 1. contactMethod eq <dashless_digits>
+        # 2. contactMethod eq <dashed_format>
+        # Then client-side matching verifies the actual digit match.
+        dashless = digits
+        dashed = AthenaClient.format_phone_with_dashes(digits)
+
+        # Build OR filter with two branches: one for dashless, one for dashed
+        or_filters = [
+            {
+                "condition": "and",
+                "property": field,
+                "operator": "eq",
+                "value": dashless,
+            },
+            {
+                "condition": "and",
+                "property": field,
+                "operator": "eq",
+                "value": dashed,
+            },
+        ]
+
+        filters = [
+            {
+                "condition": "and",
+                "filters": [
+                    {"condition": "or", "filters": or_filters},
+                ],
+            }
+        ]
+
         paged = await self._athena.search_tickets(
             filters, ticket_type, page, page_size
         )
