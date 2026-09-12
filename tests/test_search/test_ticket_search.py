@@ -576,6 +576,207 @@ def test_build_description_filter_trims_whitespace():
     assert word_filters[1]["value"] == "printer"
 
 
+# ── Phone Number Search (dash-insensitive) Tests ─────────────────────
+
+
+def _make_phone_ticket(ticket_id: str, contact_method: str) -> dict:
+    """Build a minimal raw Athena ticket with a given contactMethod."""
+    return {
+        "id": ticket_id,
+        "title": f"Ticket {ticket_id}",
+        "status": {"name": "Active"},
+        "contactMethod": contact_method,
+    }
+
+
+@pytest.mark.asyncio
+async def test_phone_search_dashless_input_matches_dashed_record(
+    search_service: TicketSearchService,
+    mock_athena_client,
+):
+    """Dashless input should match a record stored with dashes."""
+    mock_athena_client.search_tickets.return_value = {
+        "results": [_make_phone_ticket("IR1", "215-555-1234")],
+        "total": 1, "page": 1, "page_size": 100, "has_more": False,
+    }
+
+    result = await search_service.search_by_field(
+        field="contactMethod", value="2155551234",
+    )
+
+    assert result.total == 1
+    assert result.tickets[0].id == "IR1"
+
+
+@pytest.mark.asyncio
+async def test_phone_search_dashed_input_matches_dashless_record(
+    search_service: TicketSearchService,
+    mock_athena_client,
+):
+    """Dashed input should match a record stored without dashes."""
+    mock_athena_client.search_tickets.return_value = {
+        "results": [_make_phone_ticket("IR2", "2155551234")],
+        "total": 1, "page": 1, "page_size": 100, "has_more": False,
+    }
+
+    result = await search_service.search_by_field(
+        field="contactMethod", value="215-555-1234",
+    )
+
+    assert result.total == 1
+    assert result.tickets[0].id == "IR2"
+
+
+@pytest.mark.asyncio
+async def test_phone_search_filters_out_non_matches(
+    search_service: TicketSearchService,
+    mock_athena_client,
+):
+    """Records whose digits differ must be excluded even if pre-filter returns them."""
+    mock_athena_client.search_tickets.return_value = {
+        "results": [
+            _make_phone_ticket("IR_MATCH", "(215) 555-1234"),
+            _make_phone_ticket("IR_OTHER", "215-555-9999"),
+        ],
+        "total": 2, "page": 1, "page_size": 100, "has_more": False,
+    }
+
+    result = await search_service.search_by_field(
+        field="contactMethod", value="2155551234",
+    )
+
+    assert result.total == 1
+    assert result.tickets[0].id == "IR_MATCH"
+
+
+@pytest.mark.asyncio
+async def test_phone_search_contains_operator_matches_partial(
+    search_service: TicketSearchService,
+    mock_athena_client,
+):
+    """With 'contains', a partial digit input should match by substring."""
+    mock_athena_client.search_tickets.return_value = {
+        "results": [_make_phone_ticket("IR3", "215-555-1234")],
+        "total": 1, "page": 1, "page_size": 100, "has_more": False,
+    }
+
+    result = await search_service.search_by_field(
+        field="contactMethod", value="5551234", operator="contains",
+    )
+
+    assert result.total == 1
+    assert result.tickets[0].id == "IR3"
+
+
+@pytest.mark.asyncio
+async def test_phone_search_recomputes_pagination(
+    search_service: TicketSearchService,
+    mock_athena_client,
+):
+    """Pagination must reflect the client-side filtered set, not raw Athena counts."""
+    matching = [_make_phone_ticket(f"IR_M{i}", "2155551234") for i in range(3)]
+    non_matching = [_make_phone_ticket(f"IR_N{i}", "2155559999") for i in range(2)]
+    mock_athena_client.search_tickets.return_value = {
+        "results": matching + non_matching,
+        "total": 999,  # bogus server-side total that must be overridden
+        "page": 1, "page_size": 100, "has_more": False,
+    }
+
+    result = await search_service.search_by_field(
+        field="contactMethod", value="215-555-1234", page=1, page_size=2,
+    )
+
+    assert result.total == 3            # only the 3 real matches
+    assert len(result.tickets) == 2     # page_size slice
+    assert result.has_more is True      # 1 match left on page 2
+
+
+@pytest.mark.asyncio
+async def test_phone_search_non_numeric_falls_back(
+    search_service: TicketSearchService,
+    mock_athena_client,
+):
+    """Non-numeric contactMethod input should fall back to a plain field filter."""
+    mock_athena_client.search_tickets.return_value = {
+        "results": [], "total": 0, "page": 1, "page_size": 50, "has_more": False,
+    }
+
+    await search_service.search_by_field(
+        field="contactMethod", value="user@example.com",
+    )
+
+    call_args = mock_athena_client.search_tickets.call_args
+    filters = call_args[0][0]
+    inner = filters[0]["filters"][0]
+    assert inner["property"] == "contactMethod"
+    assert inner["operator"] == "eq"
+    assert inner["value"] == "user@example.com"
+
+
+@pytest.mark.asyncio
+async def test_non_phone_field_unaffected(
+    search_service: TicketSearchService,
+    mock_athena_client,
+):
+    """Non-phone field searches should use the standard single-call field filter."""
+    mock_athena_client.search_tickets.return_value = {
+        "results": [], "total": 0, "page": 1, "page_size": 50, "has_more": False,
+    }
+
+    await search_service.search_by_field(
+        field="title", value="printer", operator="contains",
+    )
+
+    mock_athena_client.search_tickets.assert_called_once()
+    call_args = mock_athena_client.search_tickets.call_args
+    inner = call_args[0][0][0]["filters"][0]
+    assert inner["property"] == "title"
+    assert inner["operator"] == "contains"
+
+
+# ── Phone Number Normalization / Filter Tests ────────────────────────
+
+
+def test_normalize_phone_strips_separators():
+    """normalize_phone should reduce any format to digits only."""
+    assert AthenaClient.normalize_phone("215-555-1234") == "2155551234"
+    assert AthenaClient.normalize_phone("2155551234") == "2155551234"
+    assert AthenaClient.normalize_phone("(215) 555-1234") == "2155551234"
+    assert AthenaClient.normalize_phone("215.555.1234") == "2155551234"
+    assert AthenaClient.normalize_phone(" 215 555 1234 ") == "2155551234"
+
+
+def test_normalize_phone_handles_empty():
+    """normalize_phone should return empty string for empty/non-digit input."""
+    assert AthenaClient.normalize_phone("") == ""
+    assert AthenaClient.normalize_phone("abc") == ""
+
+
+def test_build_phone_filter_structure():
+    """build_phone_filter should produce a valid OR-of-contains structure."""
+    filters = AthenaClient.build_phone_filter("2155551234")
+
+    assert len(filters) == 1
+    assert filters[0]["condition"] == "and"
+    or_group = filters[0]["filters"][0]
+    assert or_group["condition"] == "or"
+
+    inner = or_group["filters"]
+    assert len(inner) >= 1
+    assert all(f["property"] == "contactMethod" for f in inner)
+    assert all(f["operator"] == "contains" for f in inner)
+    values = [f["value"] for f in inner]
+    assert "1234" in values
+    assert "2155551234" in values
+
+
+def test_build_phone_filter_custom_field():
+    """build_phone_filter should honor a custom field name."""
+    filters = AthenaClient.build_phone_filter("5551234", field="mobile")
+    inner = filters[0]["filters"][0]["filters"]
+    assert all(f["property"] == "mobile" for f in inner)
+
+
 # ── _extract_name Tests ──────────────────────────────────────────────
 
 

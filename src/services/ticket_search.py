@@ -65,6 +65,20 @@ class TicketSearchService:
         Returns:
             FieldSearchResponse with matching tickets and pagination metadata.
         """
+        # Phone-number fields (e.g. contactMethod) are stored as free text and
+        # may or may not contain dashes. Route these through a separator-tolerant
+        # search that matches on digits only, so '2155551234' and '215-555-1234'
+        # match the same records regardless of how either side is formatted.
+        if self._is_phone_field(field):
+            return await self._search_by_phone(
+                field=field,
+                value=value,
+                ticket_type=ticket_type,
+                operator=operator,
+                page=page,
+                page_size=page_size,
+            )
+
         filters = AthenaClient.build_field_filter(field, value, operator)
         paged = await self._athena.search_tickets(filters, ticket_type, page, page_size)
         tickets = [self._map_ticket(t) for t in paged["results"]]
@@ -74,6 +88,111 @@ class TicketSearchService:
             page=paged["page"],
             page_size=paged["page_size"],
             has_more=paged["has_more"],
+        )
+
+    # Fields that hold phone numbers and should use dash-insensitive matching.
+    _PHONE_FIELDS = frozenset({"contactMethod"})
+
+    # Safety cap on how many candidate rows we will scan from Athena when
+    # performing client-side phone matching (prevents unbounded paging).
+    _PHONE_SCAN_LIMIT = 1000
+
+    @classmethod
+    def _is_phone_field(cls, field: str) -> bool:
+        """Return True if the given field should use phone-number matching."""
+        return field in cls._PHONE_FIELDS
+
+    async def _search_by_phone(
+        self,
+        field: str,
+        value: str,
+        ticket_type: str = "incident",
+        operator: str = "eq",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> FieldSearchResponse:
+        """
+        Search a phone-number field, ignoring dashes/separators on both sides.
+
+        Strategy (Option A):
+        1. Normalize the user input to digits only.
+        2. Query Athena with a broad, separator-tolerant ``contains`` filter to
+           narrow candidates server-side.
+        3. Apply an authoritative digit-only match client-side: a record matches
+           when its normalized ``contactMethod`` equals the normalized input
+           (operator 'eq'/'ne') or contains it (operator 'contains'/'like').
+        4. Recompute pagination (total/has_more/page slice) from the filtered
+           set, since server-side counts no longer reflect true matches.
+
+        If the input has no digits, fall back to a plain field filter so
+        non-numeric contact methods (e.g. an email) still work.
+        """
+        digits = AthenaClient.normalize_phone(value)
+
+        # No digits to match on — fall back to the standard field filter.
+        if not digits:
+            filters = AthenaClient.build_field_filter(field, value, operator)
+            paged = await self._athena.search_tickets(
+                filters, ticket_type, page, page_size
+            )
+            tickets = [self._map_ticket(t) for t in paged["results"]]
+            return FieldSearchResponse(
+                tickets=tickets,
+                total=paged["total"],
+                page=paged["page"],
+                page_size=paged["page_size"],
+                has_more=paged["has_more"],
+            )
+
+        negate = operator == "ne"
+        substring = operator in ("contains", "like")
+
+        def is_match(raw: dict[str, Any]) -> bool:
+            record_digits = AthenaClient.normalize_phone(raw.get("contactMethod") or "")
+            if not record_digits:
+                return negate  # empty record only "matches" for 'ne'
+            if substring:
+                matched = digits in record_digits
+            else:  # 'eq' (and any other operator) → exact digit equality
+                matched = record_digits == digits
+            return (not matched) if negate else matched
+
+        # Broad server-side pre-filter to narrow the candidate set.
+        filters = AthenaClient.build_phone_filter(digits, field)
+
+        # Fetch candidate rows across as many Athena pages as needed (bounded),
+        # applying the authoritative client-side match to each.
+        matched: list[dict[str, Any]] = []
+        scan_page = 1
+        scanned = 0
+        fetch_size = max(page_size, 100)  # pull in reasonable batches
+        while scanned < self._PHONE_SCAN_LIMIT:
+            paged = await self._athena.search_tickets(
+                filters, ticket_type, scan_page, fetch_size
+            )
+            results = paged.get("results", [])
+            if not results:
+                break
+            scanned += len(results)
+            matched.extend(r for r in results if is_match(r))
+            if not paged.get("has_more"):
+                break
+            scan_page += 1
+
+        # Recompute pagination from the client-side filtered set.
+        total = len(matched)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_slice = matched[start:end]
+        has_more = end < total
+
+        tickets = [self._map_ticket(t) for t in page_slice]
+        return FieldSearchResponse(
+            tickets=tickets,
+            total=total,
+            page=page,
+            page_size=page_size,
+            has_more=has_more,
         )
 
     # ── Mode 2: Description Match ─────────────────────────────────────

@@ -3,6 +3,7 @@ Async HTTP client for the Athena ticketing system REST API.
 Handles OAuth2 authentication, token caching, and ticket operations.
 """
 
+import re
 import time
 from typing import Any
 
@@ -354,6 +355,98 @@ class AthenaClient:
                         "operator": operator,
                         "value": value,
                     }
+                ],
+            }
+        ]
+
+    @staticmethod
+    def normalize_phone(value: str) -> str:
+        """
+        Reduce a phone number to digits only, stripping all separators.
+
+        Collapses formats like '215-555-1234', '(215) 555-1234', and
+        '215.555.1234' to the canonical digit string '2155551234'. Useful for
+        comparing phone numbers that may or may not contain dashes/punctuation.
+
+        Args:
+            value: A phone number string in any format.
+
+        Returns:
+            A string containing only the digits from ``value``.
+        """
+        if not value:
+            return ""
+        return re.sub(r"\D", "", value)
+
+    @staticmethod
+    def build_phone_filter(
+        digits: str,
+        field: str = "contactMethod",
+    ) -> list[dict[str, Any]]:
+        """
+        Build a separator-tolerant JSON filter for phone number search.
+
+        Athena stores ``contactMethod`` as free text, so the same number may be
+        stored with or without dashes (e.g. '215-555-1234' vs '2155551234').
+        Because the view endpoint cannot strip punctuation, this builder emits a
+        broad ``OR`` of ``contains`` conditions on digit substrings that survive
+        in both dashed and dashless forms:
+
+        * For a standard 10-digit US number ``AAAPPPLLLL`` it matches on the
+          area-code+prefix chunk ``AAAPPP`` (first 6 digits) OR the line-number
+          chunk ``PPPLLLL`` (last 7 digits). These chunks appear contiguously in
+          both '2155551234' and '215-555-1234' (which contains '215555' via the
+          first two groups only when undashed, so the last-4 chunk is the
+          reliable common substring). To stay robust across formats we also
+          include the last 4 digits.
+        * For shorter/other inputs, it falls back to a ``contains`` on the full
+          digit string.
+
+        This filter is intentionally *broad* — it narrows the candidate set
+        server-side, and the caller is expected to apply an authoritative
+        digit-only equality/substring match client-side (see
+        ``normalize_phone``).
+
+        Args:
+            digits: The digits-only phone input (use ``normalize_phone`` first).
+            field: The Athena property to search (default 'contactMethod').
+
+        Returns:
+            Filter array suitable for POST /v1/view/workitem.
+        """
+        # Collect distinct digit substrings that are likely to appear
+        # contiguously regardless of how separators are placed in the record.
+        chunks: list[str] = []
+        if len(digits) >= 4:
+            chunks.append(digits[-4:])  # line-number suffix (most selective)
+        if len(digits) >= 7:
+            chunks.append(digits[-7:])  # prefix + line number
+        if len(digits) >= 10:
+            chunks.append(digits[:6])   # area code + prefix
+        # Always include the full digit string as a chunk (covers dashless
+        # records and short/partial inputs).
+        if digits and digits not in chunks:
+            chunks.append(digits)
+
+        # De-duplicate while preserving order.
+        seen: set[str] = set()
+        unique_chunks = [c for c in chunks if not (c in seen or seen.add(c))]
+
+        contains_filters: list[dict[str, Any]] = [
+            {
+                "condition": "or",
+                "property": field,
+                "operator": "contains",
+                "value": chunk,
+            }
+            for chunk in unique_chunks
+        ]
+
+        return [
+            {
+                "condition": "and",
+                "filters": [
+                    {"condition": "or", "filters": contains_filters},
                 ],
             }
         ]
