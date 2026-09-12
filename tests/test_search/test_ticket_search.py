@@ -765,6 +765,8 @@ def test_build_phone_filter_structure():
     assert len(inner) >= 1
     assert all(f["property"] == "contactMethod" for f in inner)
     assert all(f["operator"] == "contains" for f in inner)
+    # Leaf conditions must be "and" (Athena returns HTTP 500 if leaves use "or").
+    assert all(f["condition"] == "and" for f in inner)
     values = [f["value"] for f in inner]
     assert "1234" in values
     assert "2155551234" in values

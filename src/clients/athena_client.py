@@ -432,9 +432,14 @@ class AthenaClient:
         seen: set[str] = set()
         unique_chunks = [c for c in chunks if not (c in seen or seen.add(c))]
 
+        # NOTE: Leaf conditions inside an OR group must use "condition": "and"
+        # (the "or" belongs on the wrapping group, not the individual leaves).
+        # This mirrors the confirmed-working nested structure used by
+        # build_sev_filter; using "or" on the leaves causes Athena to return
+        # HTTP 500.
         contains_filters: list[dict[str, Any]] = [
             {
-                "condition": "or",
+                "condition": "and",
                 "property": field,
                 "operator": "contains",
                 "value": chunk,
