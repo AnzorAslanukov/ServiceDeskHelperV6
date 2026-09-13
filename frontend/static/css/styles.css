@@ -3007,14 +3007,14 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   Operator legend (Field Search tab) — collapsible <details>
+   Operator legend (Field Search tab) — collapsible, color-coded
    ═══════════════════════════════════════════════════════════════════ */
 
 .operator-legend {
     margin-top: 16px;
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
-    background: var(--bg-tertiary);
+    background: var(--bg-secondary);
     overflow: hidden;
 }
 
@@ -3024,6 +3024,7 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
     font-size: 0.85rem;
     font-weight: 600;
     color: var(--text-secondary);
+    background: var(--bg-tertiary);
     list-style: none;
     user-select: none;
 }
@@ -3048,42 +3049,63 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
     background: var(--bg-hover);
 }
 
+/* Grid of color-coded operator cards */
 .operator-legend-list {
     display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 6px 16px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 10px;
     margin: 0;
-    padding: 4px 16px 14px 16px;
+    padding: 14px 16px;
 }
 
-.operator-legend-list dt {
+/* Each operator is a distinct card with a colored accent.
+   --op-color / --op-bg are set per-operator by the modifier classes below. */
+.operator-item {
+    display: block;
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-left: 4px solid var(--op-color, var(--text-muted));
+    border-radius: var(--border-radius-sm);
+    background: var(--op-bg, var(--bg-tertiary));
+}
+
+.operator-item-head {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 0.82rem;
-    color: var(--text-primary);
+    margin-bottom: 4px;
 }
 
 .operator-legend-label {
-    font-weight: 600;
-}
-
-.operator-legend-list dd {
-    margin: 0;
     font-size: 0.82rem;
-    color: var(--text-secondary);
-    align-self: center;
+    font-weight: 700;
+    color: var(--text-primary);
 }
 
-.operator-legend code {
+.operator-item code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.75rem;
-    padding: 1px 6px;
-    border-radius: var(--border-radius-sm);
-    background: var(--bg-active);
-    color: var(--text-link);
-    border: 1px solid var(--border-color);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--op-color, var(--text-muted));
+    color: #FFFFFF;
+    border: none;
 }
+
+.operator-item-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+/* Per-operator color coding (uses the theme's semantic palette + Penn hues) */
+.operator-item.op-eq       { --op-color: var(--status-success); --op-bg: rgba(56, 161, 105, 0.08); }
+.operator-item.op-ne       { --op-color: var(--status-error);   --op-bg: rgba(229, 62, 62, 0.08); }
+.operator-item.op-contains { --op-color: var(--status-info);    --op-bg: rgba(74, 144, 217, 0.10); }
+.operator-item.op-like     { --op-color: #805AD5;               --op-bg: rgba(128, 90, 213, 0.10); }
+.operator-item.op-gt       { --op-color: var(--status-warning); --op-bg: rgba(214, 158, 46, 0.10); }
+.operator-item.op-lt       { --op-color: #DD6B20;               --op-bg: rgba(221, 107, 32, 0.10); }
 
 .operator-legend-note {
     margin: 0;
@@ -3093,14 +3115,12 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
     line-height: 1.5;
 }
 
-@media (max-width: 640px) {
-    .operator-legend-list {
-        grid-template-columns: 1fr;
-        gap: 2px 0;
-    }
-
-    .operator-legend-list dd {
-        margin-bottom: 8px;
-    }
+.operator-legend-note code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    padding: 1px 5px;
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-active);
+    color: var(--text-link);
 }
 

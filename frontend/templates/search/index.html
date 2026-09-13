@@ -84,25 +84,49 @@
         <!-- Operator legend (collapsible, no JS — native <details>) -->
         <details class="operator-legend">
             <summary>❓ Operator guide — what do these mean?</summary>
-            <dl class="operator-legend-list">
-                <dt><span class="operator-legend-label">Equals</span> <code>eq</code></dt>
-                <dd>The field value matches the entered value exactly.</dd>
+            <div class="operator-legend-list">
+                <div class="operator-item op-eq">
+                    <div class="operator-item-head">
+                        <span class="operator-legend-label">Equals</span> <code>eq</code>
+                    </div>
+                    <div class="operator-item-desc">The field value matches the entered value exactly.</div>
+                </div>
 
-                <dt><span class="operator-legend-label">Not Equals</span> <code>ne</code></dt>
-                <dd>The field value is anything <em>except</em> the entered value.</dd>
+                <div class="operator-item op-ne">
+                    <div class="operator-item-head">
+                        <span class="operator-legend-label">Not Equals</span> <code>ne</code>
+                    </div>
+                    <div class="operator-item-desc">The field value is anything <em>except</em> the entered value.</div>
+                </div>
 
-                <dt><span class="operator-legend-label">Contains</span> <code>contains</code></dt>
-                <dd>The field value includes the entered text anywhere within it.</dd>
+                <div class="operator-item op-contains">
+                    <div class="operator-item-head">
+                        <span class="operator-legend-label">Contains</span> <code>contains</code>
+                    </div>
+                    <div class="operator-item-desc">The field value includes the entered text anywhere within it.</div>
+                </div>
 
-                <dt><span class="operator-legend-label">Like</span> <code>like</code></dt>
-                <dd>Partial / wildcard-style pattern match on the field value.</dd>
+                <div class="operator-item op-like">
+                    <div class="operator-item-head">
+                        <span class="operator-legend-label">Like</span> <code>like</code>
+                    </div>
+                    <div class="operator-item-desc">Partial / wildcard-style pattern match on the field value.</div>
+                </div>
 
-                <dt><span class="operator-legend-label">Greater Than</span> <code>gt</code></dt>
-                <dd>The field value is greater than the entered value — best for numbers or dates (e.g., Priority).</dd>
+                <div class="operator-item op-gt">
+                    <div class="operator-item-head">
+                        <span class="operator-legend-label">Greater Than</span> <code>gt</code>
+                    </div>
+                    <div class="operator-item-desc">The field value is greater than the entered value — best for numbers or dates (e.g., Priority).</div>
+                </div>
 
-                <dt><span class="operator-legend-label">Less Than</span> <code>lt</code></dt>
-                <dd>The field value is less than the entered value — best for numbers or dates.</dd>
-            </dl>
+                <div class="operator-item op-lt">
+                    <div class="operator-item-head">
+                        <span class="operator-legend-label">Less Than</span> <code>lt</code>
+                    </div>
+                    <div class="operator-item-desc">The field value is less than the entered value — best for numbers or dates.</div>
+                </div>
+            </div>
             <p class="operator-legend-note">
                 💡 <strong>Contact Method</strong> (phone) searches are format-tolerant — dashed
                 (<code>215-555-1234</code>) and dashless (<code>2155551234</code>) numbers match either way.
