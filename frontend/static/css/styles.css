@@ -3005,3 +3005,102 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
         gap: 12px;
     }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Operator legend (Field Search tab) — collapsible <details>
+   ═══════════════════════════════════════════════════════════════════ */
+
+.operator-legend {
+    margin-top: 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    background: var(--bg-tertiary);
+    overflow: hidden;
+}
+
+.operator-legend > summary {
+    cursor: pointer;
+    padding: 10px 14px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    list-style: none;
+    user-select: none;
+}
+
+.operator-legend > summary::-webkit-details-marker {
+    display: none;
+}
+
+.operator-legend > summary::before {
+    content: "▸";
+    display: inline-block;
+    margin-right: 8px;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+
+.operator-legend[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.operator-legend > summary:hover {
+    background: var(--bg-hover);
+}
+
+.operator-legend-list {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 16px;
+    margin: 0;
+    padding: 4px 16px 14px 16px;
+}
+
+.operator-legend-list dt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+}
+
+.operator-legend-label {
+    font-weight: 600;
+}
+
+.operator-legend-list dd {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    align-self: center;
+}
+
+.operator-legend code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+    padding: 1px 6px;
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-active);
+    color: var(--text-link);
+    border: 1px solid var(--border-color);
+}
+
+.operator-legend-note {
+    margin: 0;
+    padding: 0 16px 14px 16px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+    .operator-legend-list {
+        grid-template-columns: 1fr;
+        gap: 2px 0;
+    }
+
+    .operator-legend-list dd {
+        margin-bottom: 8px;
+    }
+}
+

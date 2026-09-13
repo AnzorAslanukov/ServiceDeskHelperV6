@@ -81,6 +81,34 @@
             </div>
         </form>
 
+        <!-- Operator legend (collapsible, no JS — native <details>) -->
+        <details class="operator-legend">
+            <summary>❓ Operator guide — what do these mean?</summary>
+            <dl class="operator-legend-list">
+                <dt><span class="operator-legend-label">Equals</span> <code>eq</code></dt>
+                <dd>The field value matches the entered value exactly.</dd>
+
+                <dt><span class="operator-legend-label">Not Equals</span> <code>ne</code></dt>
+                <dd>The field value is anything <em>except</em> the entered value.</dd>
+
+                <dt><span class="operator-legend-label">Contains</span> <code>contains</code></dt>
+                <dd>The field value includes the entered text anywhere within it.</dd>
+
+                <dt><span class="operator-legend-label">Like</span> <code>like</code></dt>
+                <dd>Partial / wildcard-style pattern match on the field value.</dd>
+
+                <dt><span class="operator-legend-label">Greater Than</span> <code>gt</code></dt>
+                <dd>The field value is greater than the entered value — best for numbers or dates (e.g., Priority).</dd>
+
+                <dt><span class="operator-legend-label">Less Than</span> <code>lt</code></dt>
+                <dd>The field value is less than the entered value — best for numbers or dates.</dd>
+            </dl>
+            <p class="operator-legend-note">
+                💡 <strong>Contact Method</strong> (phone) searches are format-tolerant — dashed
+                (<code>215-555-1234</code>) and dashless (<code>2155551234</code>) numbers match either way.
+            </p>
+        </details>
+
         <!-- Loading indicator -->
         <div id="field-loading" class="htmx-indicator loading-spinner">
             <div class="spinner"></div>
