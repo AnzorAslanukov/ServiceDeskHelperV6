@@ -5,8 +5,9 @@ FastAPI application entry point for the Service Desk Helper.
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -35,6 +36,28 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+# ── Exception Handlers ─────────────────────────────────────────────────
+# Translate upstream/validation failures into clean, structured responses so
+# they never surface as unhandled 500s (e.g. Athena HTTP 500 on a bad filter,
+# or a ValueError from invalid/empty search input).
+
+
+@app.exception_handler(httpx.HTTPStatusError)
+async def athena_upstream_error_handler(request: Request, exc: httpx.HTTPStatusError):
+    """An error from an upstream API (Athena/Databricks) maps to 502 Bad Gateway."""
+    status = exc.response.status_code if exc.response is not None else "unknown"
+    return JSONResponse(
+        status_code=502,
+        content={"detail": f"Upstream service error (HTTP {status})."},
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    """A ValueError from the service/client layer maps to 400 Bad Request."""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
 # ── Authentication Middleware ──────────────────────────────────────────

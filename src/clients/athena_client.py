@@ -482,8 +482,15 @@ class AthenaClient:
 
         Returns:
             Filter array using 'contains' operators on description (one per word).
+
+        Raises:
+            ValueError: If text is empty or whitespace-only. Returning an empty
+                filter here would be treated as match-all by Athena, so this is
+                rejected as a safety net (callers should validate earlier too).
         """
         words = text.strip().split()
+        if not words:
+            raise ValueError("Description filter text must contain at least one word.")
         word_filters: list[dict[str, Any]] = [
             {
                 "condition": "and",
@@ -753,23 +760,57 @@ class AthenaClient:
 
         Returns:
             Normalized dict with 'results', 'total', 'page', 'page_size', 'has_more'.
+
+        Note:
+            The Athena view endpoint ignores $skip/$top and returns the full
+            (server-capped, ~1000 rows) match set on every request. To honour
+            the requested page/page_size contract, this method slices that set
+            client-side and DERIVES 'has_more' from the counts so the metadata
+            is always internally consistent (has_more is never True when the
+            returned page already contains the entire total).
         """
         if isinstance(data, dict) and "result" in data:
-            return {
-                "results": data.get("result", []),
-                "total": data.get("resultCount", len(data.get("result", []))),
-                "page": page,
-                "page_size": page_size,
-                "has_more": data.get("hasMoreResults", False),
-            }
-        # Fallback for unexpected response shapes
-        results = data if isinstance(data, list) else []
+            full_results = data.get("result", []) or []
+        elif isinstance(data, list):
+            full_results = data
+        else:
+            full_results = []
+
+        return AthenaClient._slice_page(full_results, page, page_size)
+
+    @staticmethod
+    def _slice_page(
+        full_results: list[Any],
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any]:
+        """
+        Slice a full result set to the requested page window and derive
+        consistent pagination metadata.
+
+        Args:
+            full_results: The complete (server-capped) list from Athena.
+            page: Requested page number (1-based; values < 1 treated as 1).
+            page_size: Requested page size (values < 1 treated as 1).
+
+        Returns:
+            Normalized dict with 'results', 'total', 'page', 'page_size',
+            'has_more'. Invariant: has_more is True iff there are more rows
+            after this page (i.e. page * page_size < total).
+        """
+        safe_page = page if page >= 1 else 1
+        safe_size = page_size if page_size >= 1 else 1
+        total = len(full_results)
+        start = (safe_page - 1) * safe_size
+        end = start + safe_size
+        page_slice = full_results[start:end]
+        has_more = end < total
         return {
-            "results": results,
-            "total": len(results),
-            "page": page,
-            "page_size": page_size,
-            "has_more": False,
+            "results": page_slice,
+            "total": total,
+            "page": safe_page,
+            "page_size": safe_size,
+            "has_more": has_more,
         }
 
     # ── Lifecycle ─────────────────────────────────────────────────────

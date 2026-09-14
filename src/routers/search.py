@@ -8,6 +8,7 @@ Endpoints:
     POST /search/similar/{id}   — Find tickets similar to a given ticket
 """
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.dependencies import get_search_service
@@ -56,13 +57,24 @@ async def search_by_description(
 
     Example: Find all incidents whose description contains 'printer not printing'.
     Supports pagination via page and page_size parameters.
+
+    Errors are translated to clean HTTP responses: invalid input -> 400,
+    upstream Athena failures -> 502 (never an unhandled 500).
     """
-    return await service.search_by_description(
-        text=request.text,
-        ticket_type=request.ticket_type.value,
-        page=request.page,
-        page_size=request.page_size,
-    )
+    try:
+        return await service.search_by_description(
+            text=request.text,
+            ticket_type=request.ticket_type.value,
+            page=request.page,
+            page_size=request.page_size,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        raise HTTPException(
+            status_code=502, detail=f"Upstream service error (HTTP {status})."
+        )
 
 
 @router.post("/semantic", response_model=SemanticSearchResponse)

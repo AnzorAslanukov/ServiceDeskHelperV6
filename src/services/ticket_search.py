@@ -223,7 +223,13 @@ class TicketSearchService:
 
         Returns:
             FieldSearchResponse with matching tickets and pagination metadata.
+
+        Raises:
+            ValueError: If text is empty or whitespace-only (would otherwise
+                build an empty filter that Athena treats as match-all).
         """
+        if not text or not text.strip():
+            raise ValueError("Description search text must not be empty or whitespace.")
         filters = AthenaClient.build_description_filter(text)
         paged = await self._athena.search_tickets(filters, ticket_type, page, page_size)
         tickets = [self._map_ticket(t) for t in paged["results"]]

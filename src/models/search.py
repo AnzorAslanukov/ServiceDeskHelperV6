@@ -4,7 +4,7 @@ Pydantic models for search request/response payloads.
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TicketType(str, Enum):
@@ -53,6 +53,7 @@ class DescriptionSearchRequest(BaseModel):
     """Request to search tickets by substring in the description field."""
     text: str = Field(
         ...,
+        min_length=1,
         description="Text to search for within ticket descriptions.",
         examples=["printer not printing"],
     )
@@ -71,6 +72,14 @@ class DescriptionSearchRequest(BaseModel):
         le=200,
         description="Number of results per page.",
     )
+
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, v: str) -> str:
+        """Reject empty or whitespace-only search text (would match all tickets)."""
+        if not v.strip():
+            raise ValueError("text must not be empty or whitespace")
+        return v
 
 
 class SemanticSearchRequest(BaseModel):
