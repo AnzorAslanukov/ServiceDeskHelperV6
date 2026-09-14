@@ -86,6 +86,37 @@ async def test_detail_numeric_legacy_id_renders_not_error():
 
 
 @pytest.mark.asyncio
+async def test_detail_none_raw_ticket_shows_friendly_not_found():
+    """Athena returning null (JSON) for an embedded-but-unavailable ticket.
+
+    Reproduces: "Could not load details for IR9079436: 'NoneType' object has
+    no attribute 'get'". The ticket exists in ir_embeddings but Athena returns
+    a null body (HTTP 200), so get_ticket() -> response.json() is None. The
+    detail render must degrade to a friendly message, not crash.
+    """
+    mock_athena = AsyncMock()
+    mock_athena.get_ticket.return_value = None
+    try:
+        async with _detail_client(mock_athena) as client:
+            resp = await client.get("/ui/ticket/IR9079436/details")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert "NoneType" not in resp.text
+    assert "IR9079436" in resp.text
+
+
+def test_extract_rich_detail_none_returns_dict_not_crash():
+    """_extract_rich_ticket_detail must tolerate a None raw ticket."""
+    detail = _extract_rich_ticket_detail(None, "IR9079436")
+    assert detail["id"] == "IR9079436"
+    # No data available -> all optional fields None, no exception.
+    assert detail["title"] is None
+    assert detail["location"] is None
+
+
+@pytest.mark.asyncio
 async def test_detail_int_priority_renders_not_error():
     """An IR ticket with integer priority must render without the error alert."""
     mock_athena = AsyncMock()

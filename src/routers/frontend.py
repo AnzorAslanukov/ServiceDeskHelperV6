@@ -195,6 +195,17 @@ async def ticket_detail_partial(
     """HTMX partial: Fetch a single ticket from Athena and return rich detail HTML."""
     try:
         raw = await athena.get_ticket(ticket_id)
+        # Athena can return a null body (HTTP 200) for a ticket that exists in
+        # the embedding store but is no longer retrievable. Show a friendly
+        # notice rather than a near-empty detail card or an error alert.
+        if not isinstance(raw, dict) or not raw:
+            return HTMLResponse(
+                '<div class="alert alert-info">'
+                "<span>ℹ️</span>"
+                f"<span>Details for {ticket_id} are no longer available in Athena "
+                "(the ticket may have been archived or deleted).</span>"
+                "</div>"
+            )
         ticket = _extract_rich_ticket_detail(raw, ticket_id)
         return templates.TemplateResponse(
             request,
@@ -427,7 +438,16 @@ def _extract_rich_ticket_detail(raw_ticket: dict[str, Any], ticket_id: str) -> d
 
     Returns a dict with all fields needed by the ticket_detail.html template,
     matching the same structure as Feature #3's TicketInfo.
+
+    Tolerates a missing/None/non-dict ``raw_ticket``: Athena can return a null
+    JSON body (HTTP 200) for a ticket that exists in the embedding store but is
+    no longer retrievable (deleted/archived). In that case all optional fields
+    resolve to None instead of raising ``'NoneType' object has no attribute
+    'get'``.
     """
+    if not isinstance(raw_ticket, dict):
+        raw_ticket = {}
+
     # Determine ticket type from ID prefix
     ticket_type = "incident" if ticket_id.upper().startswith("IR") else "servicerequest"
 
