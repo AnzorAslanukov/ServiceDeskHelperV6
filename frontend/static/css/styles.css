@@ -3124,3 +3124,101 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
     color: var(--text-link);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   Feature "About" panel — reusable collapsible feature description.
+   Native <details>, theme-aware, no JS. Mirrors the operator legend.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.feature-about {
+    margin-top: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    background: var(--bg-secondary);
+    overflow: hidden;
+}
+
+.feature-about > summary {
+    cursor: pointer;
+    padding: 10px 14px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    list-style: none;
+    user-select: none;
+}
+
+.feature-about > summary::-webkit-details-marker {
+    display: none;
+}
+
+.feature-about > summary::before {
+    content: "▸";
+    display: inline-block;
+    margin-right: 8px;
+    color: var(--text-muted);
+    transition: transform 0.15s ease;
+}
+
+.feature-about[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.feature-about > summary:hover {
+    background: var(--bg-hover);
+}
+
+.feature-about-body {
+    padding: 14px 16px;
+}
+
+.feature-about-lead {
+    margin: 0 0 12px 0;
+    font-size: 0.86rem;
+    color: var(--text-secondary);
+    line-height: 1.55;
+}
+
+/* Responsive grid of color-accented concept cards */
+.feature-about-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+}
+
+.feature-about-card {
+    padding: 10px 12px;
+    border: 1px solid var(--border-color);
+    border-left: 4px solid var(--fa-color, var(--text-muted));
+    border-radius: var(--border-radius-sm);
+    background: var(--fa-bg, var(--bg-tertiary));
+}
+
+.feature-about-card-head {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.feature-about-card-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.45;
+}
+
+.feature-about-card-desc code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    padding: 1px 6px;
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-active);
+    color: var(--text-link);
+}
+
+/* Per-card color coding (theme semantic palette + Penn hues) */
+.feature-about-card.fa-how     { --fa-color: var(--status-info);    --fa-bg: rgba(74, 144, 217, 0.10); }
+.feature-about-card.fa-scope   { --fa-color: var(--status-success); --fa-bg: rgba(56, 161, 105, 0.08); }
+.feature-about-card.fa-example { --fa-color: #805AD5;               --fa-bg: rgba(128, 90, 213, 0.10); }
+.feature-about-card.fa-tip     { --fa-color: var(--status-warning); --fa-bg: rgba(214, 158, 46, 0.10); }
+
