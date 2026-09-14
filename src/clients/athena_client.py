@@ -83,13 +83,16 @@ class AthenaClient:
         return response.json()
 
     async def get_ticket(self, ticket_id: str) -> dict[str, Any]:
-        """Retrieve a ticket by ID, auto-detecting type from prefix."""
-        if ticket_id.upper().startswith("IR"):
-            return await self.get_incident(ticket_id)
-        elif ticket_id.upper().startswith("SR"):
+        """Retrieve a ticket by ID, auto-detecting type from prefix.
+
+        Service requests use the ``SR`` prefix. Everything else — ``IR``-prefixed
+        incidents as well as numeric-only / legacy IDs found in the ir_embeddings
+        vector store (~2% of rows) — is treated as an incident, since those
+        embeddings are all incident records.
+        """
+        if ticket_id.upper().startswith("SR"):
             return await self.get_service_request(ticket_id)
-        else:
-            raise ValueError(f"Unknown ticket type prefix in '{ticket_id}'. Expected IR or SR.")
+        return await self.get_incident(ticket_id)
 
     # ── View Filter Queries ───────────────────────────────────────────
 

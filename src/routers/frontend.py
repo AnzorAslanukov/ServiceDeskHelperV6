@@ -305,8 +305,15 @@ async def search_similar_partial(
 # ── Helper Functions ───────────────────────────────────────────────────
 
 
-def _is_guid(value: str) -> bool:
-    """Check if a string looks like a GUID."""
+def _is_guid(value: Any) -> bool:
+    """Check if a value is a string that looks like a GUID.
+
+    Tolerant of non-string input (e.g., an integer priority): anything that is
+    not a ``str`` is simply not a GUID, so we return False instead of letting
+    ``re.match`` raise a TypeError.
+    """
+    if not isinstance(value, str):
+        return False
     return bool(re.match(
         r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
         value,
