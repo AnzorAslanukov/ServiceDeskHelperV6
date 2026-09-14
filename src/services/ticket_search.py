@@ -9,6 +9,7 @@ Provides four search modes:
 """
 
 import asyncio
+import math
 import re
 from datetime import datetime
 from typing import Any
@@ -274,23 +275,21 @@ class TicketSearchService:
             query_embedding, top_k=5
         )
 
-        similar_tickets = [
-            SimilarTicketResult(id=r["id"], similarity=r["similarity"])
-            for r in ticket_results
-        ]
+        similar_tickets = self._build_similar_results(ticket_results)
 
         # Fetch titles for the similar tickets in parallel
         similar_tickets = await self._enrich_similar_tickets_with_titles(similar_tickets)
 
         documentation = [
             DocumentationResult(
-                content=r["content"],
-                notebook=r["notebook"],
-                section=r["section"],
-                title=r["title"],
+                content=r.get("content", ""),
+                notebook=r.get("notebook", ""),
+                section=r.get("section", ""),
+                title=r.get("title", ""),
                 similarity=r["similarity"],
             )
             for r in doc_results
+            if self._is_valid_similarity(r.get("similarity"))
         ]
 
         return SemanticSearchResponse(
@@ -347,12 +346,10 @@ class TicketSearchService:
             embedding, top_k=top_k + 1
         )
 
-        # Filter out the source ticket itself
-        similar_tickets = [
-            SimilarTicketResult(id=r["id"], similarity=r["similarity"])
-            for r in results
-            if r["id"] != ticket_id
-        ][:top_k]
+        # Filter out the source ticket itself, plus any malformed rows
+        similar_tickets = self._build_similar_results(
+            r for r in results if r.get("id") != ticket_id
+        )[:top_k]
 
         # Fetch titles for the similar tickets in parallel
         similar_tickets = await self._enrich_similar_tickets_with_titles(similar_tickets)
@@ -363,6 +360,34 @@ class TicketSearchService:
         )
 
     # ── Helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_valid_similarity(value: Any) -> bool:
+        """Return True only for a real, finite similarity number.
+
+        Guards against NaN/inf/None leaking into results, which would render
+        as 'nan%'/'inf%' in the UI similarity bar.
+        """
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    @classmethod
+    def _build_similar_results(cls, rows: Any) -> list[SimilarTicketResult]:
+        """Build SimilarTicketResult objects from raw vector-store rows.
+
+        Skips any row lacking a usable string ``id`` or a finite ``similarity``
+        so malformed rows are dropped (not rendered) instead of crashing the
+        request or producing garbage output.
+        """
+        results: list[SimilarTicketResult] = []
+        for r in rows:
+            ticket_id = r.get("id")
+            similarity = r.get("similarity")
+            if not isinstance(ticket_id, str) or not ticket_id:
+                continue
+            if not cls._is_valid_similarity(similarity):
+                continue
+            results.append(SimilarTicketResult(id=ticket_id, similarity=float(similarity)))
+        return results
 
     async def _enrich_similar_tickets_with_titles(
         self, tickets: list[SimilarTicketResult]
