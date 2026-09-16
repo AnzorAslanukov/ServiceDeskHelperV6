@@ -177,9 +177,63 @@ def load_location_lookup(
         return {}
 
 
+def build_location_leaf_index(
+    guid_to_fullname: dict[str, str],
+) -> dict[str, str]:
+    """
+    Build a leaf-name → full-path index from the GUID→fullname mapping.
+
+    Athena sometimes returns only a location leaf name (e.g. 'MUTCH') with no
+    resolvable GUID or path. This index lets us recover the full hierarchical
+    path ('PPMC\\MUTCH') from that leaf so site detection still works.
+
+    Keys are lower-cased leaf names. When two different campuses share a leaf
+    name the mapping is ambiguous, so those leaves are dropped (mapped to "")
+    to avoid guessing the wrong campus.
+
+    Returns:
+        Dict mapping lower-cased leaf name → full path (ambiguous leaves omitted).
+    """
+    index: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for fullname in guid_to_fullname.values():
+        if not fullname:
+            continue
+        leaf = fullname.split("\\")[-1].strip().lower()
+        if not leaf or leaf in ambiguous:
+            continue
+        existing = index.get(leaf)
+        if existing is not None and existing != fullname:
+            # Same leaf under two different paths → ambiguous, drop it.
+            del index[leaf]
+            ambiguous.add(leaf)
+            continue
+        index[leaf] = fullname
+    return index
+
+
+def resolve_location_to_path(location: str | None) -> str | None:
+    """
+    Resolve a bare location leaf name to its full ``parent\\child`` path.
+
+    If ``location`` already contains a path separator it is returned as-is.
+    Otherwise the leaf name is looked up in LOCATION_LEAF_TO_FULLNAME. Returns
+    None when the leaf is unknown or ambiguous.
+    """
+    if not location:
+        return None
+    if "\\" in location:
+        return location
+    return LOCATION_LEAF_TO_FULLNAME.get(location.strip().lower())
+
+
 # Load at module import time
 IR_SUPPORT_GROUPS, SR_SUPPORT_GROUPS = load_support_groups()
 LOCATION_GUID_TO_FULLNAME: dict[str, str] = load_location_lookup()
+# Leaf name → full path index, so a bare leaf ('MUTCH') can recover 'PPMC\\MUTCH'.
+LOCATION_LEAF_TO_FULLNAME: dict[str, str] = build_location_leaf_index(
+    LOCATION_GUID_TO_FULLNAME
+)
 
 
 def extract_location_path(raw_ticket: dict[str, Any]) -> str | None:
@@ -240,11 +294,15 @@ def extract_location_path(raw_ticket: dict[str, Any]) -> str | None:
     if full_path_from_dict:
         return _last_two_segments(full_path_from_dict)
 
-    if location_value_str:
-        return location_value_str
-
-    if leaf_from_dict:
-        return leaf_from_dict
+    # 5. Only a bare leaf name is available (no GUID/path). Try to recover the
+    # full parent\child path from the leaf index so site detection still works
+    # (e.g. 'MUTCH' -> 'PPMC\\MUTCH'). Falls back to the leaf as-is.
+    leaf_candidate = location_value_str or leaf_from_dict
+    if leaf_candidate:
+        recovered = resolve_location_to_path(leaf_candidate)
+        if recovered and "\\" in recovered:
+            return _last_two_segments(recovered)
+        return leaf_candidate
 
     return None
 

@@ -87,8 +87,64 @@ _UPHS_KEYWORDS: tuple[str, ...] = (
 )
 
 
+# ── Top-level campus → site map ───────────────────────────────────────
+# Locations in Athena resolve to a hierarchical path whose FIRST segment is
+# the top-level campus (e.g. 'PPMC\\MUTCH' -> 'PPMC'). Mapping that campus to
+# a site is far more reliable than substring keyword matching, because it does
+# not depend on a building/leaf name (e.g. 'MUTCH') happening to be a keyword.
+#
+# Derived from exploration/output/locations.json (19 top-level campuses).
+# Ambiguous top segments that contain BOTH UPHS and LGH children (e.g.
+# 'Community Connect', 'CAMPUS', 'Data Center', 'Remote sites (RSI)',
+# 'Remote User') are intentionally OMITTED so they resolve to None (neutral)
+# and fall back to keyword detection instead of forcing a wrong site.
+_CAMPUS_SITE: dict[str, str] = {
+    # UPHS campuses
+    "cch": SITE_UPHS,
+    "doylestown (pmdh)": SITE_UPHS,
+    "hup": SITE_UPHS,
+    "hup cedar": SITE_UPHS,
+    "hup pavilion": SITE_UPHS,
+    "pah": SITE_UPHS,
+    "pcam": SITE_UPHS,
+    "pmuc": SITE_UPHS,
+    "pmah": SITE_UPHS,
+    "ppmc": SITE_UPHS,
+    "princeton (mcp)": SITE_UPHS,
+    "ritt": SITE_UPHS,
+    # LGH campuses
+    "lgh": SITE_LGH,
+    "lghp": SITE_LGH,
+}
+
+
 def _has_keyword(text: str, keywords: tuple[str, ...]) -> bool:
     return any(kw in text for kw in keywords)
+
+
+def site_for_location_path(location_path: str | None) -> str | None:
+    """
+    Determine the site (UPHS or LGH) from a resolved location path.
+
+    Uses the TOP-LEVEL campus segment of a ``parent\\child`` path (e.g.
+    'PPMC\\MUTCH' -> 'PPMC' -> UPHS), which is deterministic and does not
+    depend on the leaf/building name being a keyword. Falls back to keyword
+    detection over the whole path when the top segment is unknown/ambiguous.
+
+    Returns SITE_UPHS, SITE_LGH, or None when the campus is site-neutral or no
+    signal is present.
+    """
+    if not location_path:
+        return None
+
+    top_segment = location_path.split("\\")[0].strip().lower()
+    site = _CAMPUS_SITE.get(top_segment)
+    if site is not None:
+        return site
+
+    # Unknown/ambiguous top segment (e.g. 'CAMPUS', 'Community Connect', or a
+    # bare street address) — fall back to keyword detection over the full path.
+    return detect_site(location_path)
 
 
 def detect_site(*text_fields: str | None) -> str | None:

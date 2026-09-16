@@ -15,9 +15,12 @@ from src.models.assignment import (
 )
 from src.services.assignment import (
     AssignmentService,
+    build_location_leaf_index,
     check_service_desk_triage,
     check_specific_triage,
+    extract_location_path,
     resolve_group_guid,
+    resolve_location_to_path,
     IR_SUPPORT_GROUPS,
     SR_SUPPORT_GROUPS,
 )
@@ -485,6 +488,39 @@ class TestSiteGuardrail:
         assert adjusted is False
         assert warning is not None
         assert "LGH" in warning
+
+
+class TestLocationLeafRecovery:
+    """Leaf-name -> full-path recovery so bare leaves still detect their site."""
+
+    def test_build_location_leaf_index_maps_unique_leaf(self):
+        index = build_location_leaf_index({"g1": "PPMC\\MUTCH", "g2": "HUP\\RAVDIN"})
+        assert index["mutch"] == "PPMC\\MUTCH"
+        assert index["ravdin"] == "HUP\\RAVDIN"
+
+    def test_build_location_leaf_index_drops_ambiguous_leaf(self):
+        # Same leaf name under two campuses -> ambiguous -> not indexed.
+        index = build_location_leaf_index(
+            {"g1": "HUP\\LOBBY", "g2": "PAH\\LOBBY", "g3": "PPMC\\MUTCH"}
+        )
+        assert "lobby" not in index
+        assert index["mutch"] == "PPMC\\MUTCH"
+
+    def test_resolve_location_to_path_from_leaf(self):
+        # Uses the real module-level index built from locations.json.
+        assert resolve_location_to_path("MUTCH") == "PPMC\\MUTCH"
+
+    def test_resolve_location_to_path_passthrough_for_full_path(self):
+        assert resolve_location_to_path("PPMC\\MUTCH") == "PPMC\\MUTCH"
+
+    def test_resolve_location_to_path_unknown_returns_none(self):
+        assert resolve_location_to_path("NOWHERE-LEAF-XYZ") is None
+        assert resolve_location_to_path(None) is None
+
+    def test_extract_location_path_recovers_full_path_from_leaf_dict(self):
+        """Regression (SR10728545): a leaf-only location dict recovers its campus."""
+        ticket = {"id": "SR10728545", "location": {"name": "MUTCH"}}
+        assert extract_location_path(ticket) == "PPMC\\MUTCH"
 
 
     def test_assignment_response_model(self):

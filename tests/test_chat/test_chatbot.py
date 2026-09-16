@@ -1134,6 +1134,26 @@ class TestSiteRoutingAndWidening:
         site = ChatbotService._compute_detected_site("Reset my password", None)
         assert site is None
 
+    def test_compute_detected_site_recovers_site_from_bare_leaf_location(self):
+        """Regression (SR10728545): a bare leaf location must still detect the site.
+
+        Athena returned only the building leaf 'MUTCH' (no resolvable GUID/path),
+        which previously yielded UNKNOWN and disabled the cross-site guardrail —
+        letting an LGH group (PC Techs) be recommended for a UPHS ticket. The leaf
+        must now recover its campus ('PPMC\\MUTCH') and detect UPHS.
+        """
+        tickets = [
+            {
+                "id": "SR10728545",
+                "title": "connect laptop to printer",
+                "location": {"name": "MUTCH"},
+            },
+        ]
+        site = ChatbotService._compute_detected_site(
+            "Recommend support group for ticket SR10728545", tickets
+        )
+        assert site == "UPHS"
+
     # ── _is_low_confidence ────────────────────────────────────────────
 
     def test_is_low_confidence_true_for_weak_classifier(self):

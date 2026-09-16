@@ -12,6 +12,7 @@ from src.services.site_routing import (
     detect_site,
     group_site,
     notebook_for_site,
+    site_for_location_path,
     sites_conflict,
 )
 
@@ -93,3 +94,35 @@ def test_sites_conflict():
     assert sites_conflict(None, SITE_UPHS) is False
     assert sites_conflict(SITE_LGH, None) is False
     assert sites_conflict(None, None) is False
+
+
+# ── site_for_location_path ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "path, expected",
+    [
+        # Top-level campus segment drives the decision (leaf need not be a keyword).
+        ("PPMC\\MUTCH", SITE_UPHS),
+        ("HUP\\RAVDIN", SITE_UPHS),
+        ("PAH", SITE_UPHS),
+        ("Doylestown (PMDH)\\Some Wing", SITE_UPHS),
+        ("LGH\\Epic", SITE_LGH),
+        ("LGHP", SITE_LGH),
+        # Ambiguous/site-neutral top segments → None (fall back to keyword detect).
+        ("CAMPUS\\1500 MARKET ST", None),
+        ("Remote User", None),
+        # Case-insensitive top segment.
+        ("ppmc\\mutch", SITE_UPHS),
+        # Empty / missing.
+        ("", None),
+        (None, None),
+    ],
+)
+def test_site_for_location_path(path, expected):
+    assert site_for_location_path(path) == expected
+
+
+def test_site_for_location_path_falls_back_to_keywords():
+    # Unknown top segment but a UPHS keyword deeper in the path.
+    assert site_for_location_path("CAMPUS\\PennChart Support") == SITE_UPHS

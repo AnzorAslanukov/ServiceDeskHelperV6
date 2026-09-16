@@ -42,6 +42,7 @@ from src.services.site_routing import (
     detect_site,
     group_site,
     notebook_for_site,
+    site_for_location_path,
     sites_conflict,
 )
 from src.services.ticket_classifier import TicketClassifier, get_ticket_classifier
@@ -380,6 +381,11 @@ class ChatbotService:
         Combines the user's query text with the resolved location + title of any
         referenced tickets. Referenced-ticket location is the strongest signal,
         so it is included first.
+
+        The resolved location path is checked FIRST via ``site_for_location_path``
+        (top-level campus segment, e.g. 'PPMC\\MUTCH' -> UPHS), which is far more
+        reliable than substring keyword matching. Only if the location yields no
+        site do we fall back to keyword detection across location + title + query.
         """
         fields: list[str] = []
         if referenced_tickets:
@@ -387,6 +393,10 @@ class ChatbotService:
                 if t.get("_not_found") or t.get("_error"):
                     continue
                 loc = extract_location_path(t) or ""
+                # Prefer deterministic campus-based detection on the location path.
+                loc_site = site_for_location_path(loc)
+                if loc_site is not None:
+                    return loc_site
                 fields.append(loc)
                 fields.append(str(t.get("title", "")))
         fields.append(message)
@@ -575,8 +585,12 @@ class ChatbotService:
             source = _extract_str(ticket.get("source", ""))
 
             # Detect the ticket's organization/site (UPHS vs LGH) for the
-            # cross-site routing guardrail.
-            ticket_site = detect_site(location, title, description)
+            # cross-site routing guardrail. Prefer the deterministic campus-based
+            # detection on the resolved location path (e.g. 'PPMC\\MUTCH' -> UPHS),
+            # falling back to keyword detection over location + title + description.
+            ticket_site = site_for_location_path(location) or detect_site(
+                location, title, description
+            )
 
             try:
                 # Step 1: Check specific triage rules
@@ -899,7 +913,10 @@ class ChatbotService:
         if ticket.get("assignedToUser"):
             lines.append(f"Assigned To: {_extract(ticket['assignedToUser'])}")
         if ticket.get("location"):
-            lines.append(f"Location: {_extract(ticket['location'])}")
+            # Show the resolved parent\child path (e.g. 'PPMC\\MUTCH') so the LLM
+            # sees the campus for site routing — not just the bare leaf ('MUTCH').
+            resolved_location = extract_location_path(ticket) or _extract(ticket["location"])
+            lines.append(f"Location: {resolved_location}")
         if ticket.get("createdDate"):
             lines.append(f"Created: {ticket['createdDate']}")
         if ticket.get("description"):
@@ -960,7 +977,11 @@ class ChatbotService:
             parts.append(
                 "=== DETECTED SITE: UNKNOWN ===\n"
                 "The organization (UPHS vs LGH) could not be determined from the "
-                "request. If routing, confirm the site with the analyst first."
+                "request. Do NOT commit to a site-specific support group. Instead, "
+                "state that the site is unconfirmed, ask the analyst to confirm the "
+                "campus/site, and only then route. If you must suggest a group, "
+                "prefer a site-neutral one (e.g. Service Desk) and clearly flag the "
+                "site as unverified."
             )
 
         # Referenced ticket data (highest priority — user explicitly asked about these)
