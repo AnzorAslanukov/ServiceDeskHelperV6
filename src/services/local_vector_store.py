@@ -142,6 +142,7 @@ class LocalVectorStore:
         self,
         embedding: list[float],
         top_k: int = 5,
+        notebook: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Find the most similar OneNote documentation entries by cosine similarity.
@@ -149,6 +150,12 @@ class LocalVectorStore:
         Args:
             embedding: Query embedding vector (1024 dims).
             top_k: Number of top results to return.
+            notebook: Optional notebook filter (e.g., 'uphs_notebook' or
+                'lgh_notebook'). When provided, results are restricted to that
+                notebook. If fewer than ``top_k`` same-notebook entries exist,
+                the remainder is backfilled from the other notebook (ranked by
+                similarity) so callers never receive an empty list purely due to
+                the filter.
 
         Returns:
             List of dicts with content, notebook, section, title, and similarity.
@@ -160,13 +167,32 @@ class LocalVectorStore:
             embedding, self._doc_embeddings, self._doc_norms
         )
 
-        # Get top-k indices
-        top_k = min(top_k, len(similarities))
-        top_indices = np.argpartition(similarities, -top_k)[-top_k:]
-        top_indices = top_indices[np.argsort(similarities[top_indices])[::-1]]
+        # Global ranking of all documents by similarity (descending).
+        ranked_indices = np.argsort(similarities)[::-1]
+
+        if notebook:
+            # Prefer same-notebook results; backfill from others if needed.
+            same_nb: list[int] = []
+            other_nb: list[int] = []
+            for idx in ranked_indices:
+                meta = self._doc_metadata[idx]
+                if meta.get("notebook", "") == notebook:
+                    same_nb.append(int(idx))
+                else:
+                    other_nb.append(int(idx))
+                # Stop early once we have enough same-notebook + buffer.
+                if len(same_nb) >= top_k:
+                    break
+            selected = same_nb[:top_k]
+            if len(selected) < top_k:
+                selected.extend(other_nb[: top_k - len(selected)])
+            chosen_indices = selected
+        else:
+            top_k_eff = min(top_k, len(similarities))
+            chosen_indices = [int(i) for i in ranked_indices[:top_k_eff]]
 
         results = []
-        for idx in top_indices:
+        for idx in chosen_indices:
             meta = self._doc_metadata[idx]
             results.append({
                 "content": meta.get("content", ""),
@@ -217,6 +243,12 @@ class LocalVectorStore:
             results.append({
                 "id": meta.get("Id", ""),
                 "similarity": float(similarities[idx]),
+                # Enriched fields so callers can reason about *what* the similar
+                # ticket was and where it went (used for corroborating support
+                # group routing and detecting UPHS/LGH site).
+                "title": meta.get("Title", ""),
+                "support_group": meta.get("SupportGroup", ""),
+                "location": meta.get("Location", ""),
             })
 
         return results

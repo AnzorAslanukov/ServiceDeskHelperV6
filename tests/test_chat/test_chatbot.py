@@ -291,7 +291,7 @@ def test_build_context_with_docs_and_tickets(
     assert "KNOWLEDGE BASE DOCUMENTATION" in context
     assert "HP LaserJet Troubleshooting" in context
     assert "Printer Escalation Guide" in context
-    assert "SIMILAR HISTORICAL TICKETS" in context
+    assert "MATCHING HISTORICAL TICKETS" in context
     assert "IR1959100" in context
     assert "0.950" in context  # similarity formatted to 3 decimals
 
@@ -301,7 +301,7 @@ def test_build_context_docs_only(sample_documentation_results):
     context = ChatbotService._build_context("", sample_documentation_results, [])
 
     assert "KNOWLEDGE BASE DOCUMENTATION" in context
-    assert "SIMILAR HISTORICAL TICKETS" not in context
+    assert "MATCHING HISTORICAL TICKETS" not in context
 
 
 def test_build_context_tickets_only(sample_similar_results):
@@ -309,14 +309,25 @@ def test_build_context_tickets_only(sample_similar_results):
     context = ChatbotService._build_context("", [], sample_similar_results)
 
     assert "KNOWLEDGE BASE DOCUMENTATION" not in context
-    assert "SIMILAR HISTORICAL TICKETS" in context
+    assert "MATCHING HISTORICAL TICKETS" in context
 
 
 def test_build_context_empty():
-    """_build_context with no results should return a fallback message."""
+    """_build_context with no results still emits the DETECTED SITE block."""
     context = ChatbotService._build_context("", [], [])
 
-    assert "No relevant documentation" in context
+    # With no docs/tickets/graph, the only content is the site header.
+    assert "DETECTED SITE" in context
+    assert "KNOWLEDGE BASE DOCUMENTATION" not in context
+    assert "MATCHING HISTORICAL TICKETS" not in context
+
+
+def test_build_context_includes_detected_site():
+    """_build_context should surface the detected site when provided."""
+    context = ChatbotService._build_context(
+        "", [], [], detected_site="LGH"
+    )
+    assert "DETECTED SITE: LGH" in context
 
 
 def test_build_context_with_graph_context(sample_similar_results):
@@ -326,7 +337,7 @@ def test_build_context_with_graph_context(sample_similar_results):
 
     assert "STRUCTURED KNOWLEDGE" in context
     assert "Escalate to: EUS\\HUP" in context
-    assert "SIMILAR HISTORICAL TICKETS" in context
+    assert "MATCHING HISTORICAL TICKETS" in context
     assert "KNOWLEDGE BASE DOCUMENTATION" not in context
 
 
@@ -898,7 +909,7 @@ class TestClassifierIntegration:
         # Check that the LLM was called with context containing classifier predictions
         llm_call_args = mock_databricks_client.call_llm.call_args[0][0]
         system_msg = llm_call_args[0]["content"]
-        assert "CLASSIFIER PREDICTIONS" in system_msg
+        assert "CLASSIFIER HINTS" in system_msg
         assert "EUS\\HUP" in system_msg
         assert "75.0%" in system_msg
 
@@ -978,7 +989,7 @@ class TestClassifierIntegration:
         # But the context should still have a prediction (from triage rule)
         llm_call_args = mock_databricks_client.call_llm.call_args[0][0]
         system_msg = llm_call_args[0]["content"]
-        assert "CLASSIFIER PREDICTIONS" in system_msg
+        assert "CLASSIFIER HINTS" in system_msg
         assert "Service Desk" in system_msg
         assert "triage_rule" in system_msg
 
@@ -1007,7 +1018,7 @@ class TestClassifierIntegration:
         assert response.message is not None
         llm_call_args = mock_databricks_client.call_llm.call_args[0][0]
         system_msg = llm_call_args[0]["content"]
-        assert "CLASSIFIER PREDICTIONS" not in system_msg
+        assert "CLASSIFIER HINTS" not in system_msg
 
     def test_format_classifier_results_empty(self):
         """Formatting empty results should return empty string."""
@@ -1030,7 +1041,7 @@ class TestClassifierIntegration:
         ]
         formatted = ChatbotService._format_classifier_results_for_context(results)
 
-        assert "CLASSIFIER PREDICTIONS" in formatted
+        assert "CLASSIFIER HINTS" in formatted
         assert "IR1959493" in formatted
         assert "EUS\\HUP" in formatted
         assert "85.0%" in formatted
@@ -1086,3 +1097,171 @@ class TestClassifierIntegration:
 
         # Classifier should be called twice (once per ticket)
         assert classifier.predict.call_count == 2
+
+
+# ── Site Routing & Low-Confidence Widening (Feature #2) ───────────────
+
+
+class TestSiteRoutingAndWidening:
+    """Tests for UPHS/LGH site-aware routing and low-confidence retrieval widening."""
+
+    # ── _compute_detected_site ────────────────────────────────────────
+
+    def test_compute_detected_site_from_message(self):
+        """A message mentioning LGH should resolve to the LGH site."""
+        site = ChatbotService._compute_detected_site(
+            "Which group handles LGH printers?", None
+        )
+        assert site == "LGH"
+
+    def test_compute_detected_site_from_ticket_location(self):
+        """A referenced ticket's resolved location should drive site detection.
+
+        ``extract_location_path`` keeps the last two path segments, so the site
+        marker must live there (here 'Ravdin' is a UPHS/HUP building).
+        """
+        tickets = [
+            {
+                "title": "Printer issue",
+                "location": {"path": "HUP\\Ravdin\\Floor 3", "name": "Floor 3"},
+            },
+        ]
+        site = ChatbotService._compute_detected_site("What group?", tickets)
+        assert site == "UPHS"
+
+    def test_compute_detected_site_unknown_returns_none(self):
+        """No site signal anywhere should return None (site-neutral)."""
+        site = ChatbotService._compute_detected_site("Reset my password", None)
+        assert site is None
+
+    # ── _is_low_confidence ────────────────────────────────────────────
+
+    def test_is_low_confidence_true_for_weak_classifier(self):
+        results = [{"method": "classifier", "confidence": 0.30}]
+        assert ChatbotService._is_low_confidence(results) is True
+
+    def test_is_low_confidence_false_for_strong_classifier(self):
+        results = [{"method": "classifier", "confidence": 0.85}]
+        assert ChatbotService._is_low_confidence(results) is False
+
+    def test_is_low_confidence_false_for_triage_rule(self):
+        """Deterministic triage-rule matches are never 'low confidence'."""
+        results = [{"method": "triage_rule", "confidence": 0.10}]
+        assert ChatbotService._is_low_confidence(results) is False
+
+    # ── notebook filter threading ─────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_chat_passes_notebook_filter_for_detected_site(
+        self, mock_databricks_client, mock_vector_store
+    ):
+        """When a site is detected, the doc search should be filtered by notebook."""
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            vector_store=mock_vector_store,
+        )
+
+        await service.chat(message="How do I fix a printer at LGH?")
+
+        call_kwargs = mock_vector_store.find_similar_documentation.call_args[1]
+        assert call_kwargs.get("notebook") == "lgh_notebook"
+
+    @pytest.mark.asyncio
+    async def test_chat_notebook_none_when_site_unknown(
+        self, mock_databricks_client, mock_vector_store
+    ):
+        """Site-neutral queries should not constrain the notebook filter."""
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            vector_store=mock_vector_store,
+        )
+
+        await service.chat(message="How do I reset a password?")
+
+        call_kwargs = mock_vector_store.find_similar_documentation.call_args[1]
+        assert call_kwargs.get("notebook") is None
+
+    # ── _widen_retrieval_if_low_confidence ────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_widen_noop_when_high_confidence(
+        self, mock_databricks_client, mock_vector_store
+    ):
+        """High-confidence classifier results should not widen retrieval."""
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            vector_store=mock_vector_store,
+        )
+        docs = [{"id": "d1"}]
+        tickets = [{"id": "t1"}]
+
+        out_docs, out_tickets, widened = await service._widen_retrieval_if_low_confidence(
+            message="hi",
+            classifier_results=[{"method": "classifier", "confidence": 0.85}],
+            query_embedding=[0.1] * 1024,
+            doc_results=docs,
+            ticket_results=tickets,
+            top_k_docs=3,
+            top_k_tickets=3,
+            notebook=None,
+        )
+
+        assert widened is False
+        assert out_docs is docs
+        assert out_tickets is tickets
+
+    @pytest.mark.asyncio
+    async def test_widen_refetches_docs_when_low_confidence(
+        self, mock_databricks_client, mock_vector_store
+    ):
+        """Low-confidence should re-fetch more docs honoring the notebook filter."""
+        mock_vector_store.find_similar_documentation.return_value = [
+            {"id": f"d{i}"} for i in range(6)
+        ]
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            vector_store=mock_vector_store,
+        )
+
+        out_docs, _out_tickets, widened = await service._widen_retrieval_if_low_confidence(
+            message="printer at LGH",
+            classifier_results=[{"method": "classifier", "confidence": 0.30}],
+            query_embedding=[0.1] * 1024,
+            doc_results=[],
+            ticket_results=[],
+            top_k_docs=3,
+            top_k_tickets=3,
+            notebook="lgh_notebook",
+        )
+
+        assert widened is True
+        # Widened docs = min(3*2, 12) = 6, with the notebook filter threaded through.
+        call_kwargs = mock_vector_store.find_similar_documentation.call_args[1]
+        assert call_kwargs.get("top_k") == 6
+        assert call_kwargs.get("notebook") == "lgh_notebook"
+        assert len(out_docs) == 6
+
+    @pytest.mark.asyncio
+    async def test_widen_generates_embedding_when_missing(
+        self, mock_databricks_client, mock_vector_store
+    ):
+        """When retrieval was skipped (no embedding), widening must compute one."""
+        service = ChatbotService(
+            databricks_client=mock_databricks_client,
+            vector_store=mock_vector_store,
+        )
+
+        await service._widen_retrieval_if_low_confidence(
+            message="printer issue",
+            classifier_results=[{"method": "classifier", "confidence": 0.10}],
+            query_embedding=None,
+            doc_results=[],
+            ticket_results=[],
+            top_k_docs=3,
+            top_k_tickets=3,
+            notebook=None,
+        )
+
+        mock_databricks_client.generate_embedding.assert_awaited_with("printer issue")
+
+

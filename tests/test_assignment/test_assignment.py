@@ -395,6 +395,98 @@ class TestModels:
         assert info.id == "IR1234567"
         assert info.description is None
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# SITE GUARDRAIL (UPHS/LGH cross-site protection)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestSiteGuardrail:
+    """Tests for AssignmentService._apply_site_guardrail."""
+
+    def test_unknown_site_keeps_top_pick(self):
+        """With no detected ticket site, the classifier's top pick is kept."""
+        preds = [
+            {"support_group": "EUS\\HUP", "confidence": 0.80},
+            {"support_group": "LGH\\Epic", "confidence": 0.10},
+        ]
+        chosen, adjusted, warning = AssignmentService._apply_site_guardrail(
+            preds, ticket_site=None
+        )
+        assert chosen["support_group"] == "EUS\\HUP"
+        assert adjusted is False
+        assert warning is None
+
+    def test_same_site_top_pick_kept(self):
+        """Top pick already matching the ticket site needs no adjustment."""
+        preds = [
+            {"support_group": "EUS\\HUP", "confidence": 0.80},
+            {"support_group": "LGH\\Epic", "confidence": 0.10},
+        ]
+        chosen, adjusted, warning = AssignmentService._apply_site_guardrail(
+            preds, ticket_site="UPHS"
+        )
+        assert chosen["support_group"] == "EUS\\HUP"
+        assert adjusted is False
+        assert warning is None
+
+    def test_site_neutral_top_pick_kept(self):
+        """A site-neutral top pick (e.g. Service Desk) is not adjusted."""
+        preds = [
+            {"support_group": "Service Desk", "confidence": 0.80},
+            {"support_group": "LGH\\Epic", "confidence": 0.10},
+        ]
+        chosen, adjusted, warning = AssignmentService._apply_site_guardrail(
+            preds, ticket_site="UPHS"
+        )
+        assert chosen["support_group"] == "Service Desk"
+        assert adjusted is False
+        assert warning is None
+
+    def test_cross_site_top_pick_demoted(self):
+        """A UPHS top pick on an LGH ticket should be demoted to an LGH group."""
+        preds = [
+            {"support_group": "EUS\\HUP", "confidence": 0.80},
+            {"support_group": "LGH\\Epic", "confidence": 0.15},
+            {"support_group": "EUS\\Campus", "confidence": 0.05},
+        ]
+        chosen, adjusted, warning = AssignmentService._apply_site_guardrail(
+            preds, ticket_site="LGH"
+        )
+        assert chosen["support_group"] == "LGH\\Epic"
+        assert adjusted is True
+        assert warning is None
+
+    def test_cross_site_falls_back_to_neutral_group(self):
+        """When no same-site group exists, a site-neutral group is chosen."""
+        preds = [
+            {"support_group": "EUS\\HUP", "confidence": 0.80},
+            {"support_group": "Service Desk", "confidence": 0.15},
+        ]
+        chosen, adjusted, warning = AssignmentService._apply_site_guardrail(
+            preds, ticket_site="LGH"
+        )
+        assert chosen["support_group"] == "Service Desk"
+        assert adjusted is True
+        assert warning is None
+
+    def test_all_cross_site_keeps_top_with_warning(self):
+        """If every prediction conflicts, keep the top pick but emit a warning."""
+        # Both groups resolve to UPHS (HUP, PAH), so neither is valid for an
+        # LGH ticket and none is site-neutral.
+        preds = [
+            {"support_group": "EUS\\HUP", "confidence": 0.80},
+            {"support_group": "EUS\\PAH", "confidence": 0.15},
+        ]
+        chosen, adjusted, warning = AssignmentService._apply_site_guardrail(
+            preds, ticket_site="LGH"
+        )
+        assert chosen["support_group"] == "EUS\\HUP"
+        assert adjusted is False
+        assert warning is not None
+        assert "LGH" in warning
+
+
     def test_assignment_response_model(self):
         resp = AssignmentResponse(
             ticket=TicketInfo(id="IR1234567", ticket_type="incident"),

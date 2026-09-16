@@ -59,6 +59,18 @@ class AssignmentRecommendation(BaseModel):
         default_factory=list,
         description="Alternative predictions ranked by confidence.",
     )
+    site_adjusted: bool = Field(
+        default=False,
+        description="True if the top recommendation was re-ranked to avoid a "
+        "UPHS/LGH site mismatch (a cross-site classifier prediction was demoted "
+        "in favor of a same-site group).",
+    )
+    site_warning: str | None = Field(
+        default=None,
+        description="Populated when the ticket's site (UPHS/LGH) could not be "
+        "reconciled with any predicted group's site — the analyst should verify "
+        "the routing manually.",
+    )
 
 
 class TicketInfo(BaseModel):

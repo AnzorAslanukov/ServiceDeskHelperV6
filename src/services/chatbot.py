@@ -33,10 +33,17 @@ from src.services.assignment import (
     SR_SUPPORT_GROUPS,
     check_service_desk_triage,
     check_specific_triage,
+    extract_location_path,
     resolve_group_guid,
 )
 from src.services.knowledge_graph import KnowledgeGraphService
 from src.services.local_vector_store import LocalVectorStore
+from src.services.site_routing import (
+    detect_site,
+    group_site,
+    notebook_for_site,
+    sites_conflict,
+)
 from src.services.ticket_classifier import TicketClassifier, get_ticket_classifier
 
 logger = logging.getLogger(__name__)
@@ -50,19 +57,32 @@ TICKET_ID_PATTERN = re.compile(r"\b(IR|SR)\d{5,}\b", re.IGNORECASE)
 # Maximum number of tickets to fetch per message
 MAX_TICKET_FETCHES = 3
 
+# Classifier predictions at or below this confidence are treated as
+# low-confidence: the LLM must lean on documentation + matching tickets, and
+# retrieval is widened to pull more corroborating evidence.
+CLASSIFIER_LOW_CONFIDENCE = 0.50
+
+# How much to widen retrieval (multiplier + cap) when confidence is low.
+LOW_CONFIDENCE_RETRIEVAL_MULTIPLIER = 2
+LOW_CONFIDENCE_MAX_DOCS = 12
+LOW_CONFIDENCE_MAX_TICKETS = 12
+
 SYSTEM_PROMPT = """You are an AI assistant for the Penn Medicine / UPHS IT Service Desk. \
 Your role is to help service desk analysts resolve IT issues by providing accurate, \
 step-by-step troubleshooting guidance. You are advisory only — the analyst makes all final decisions.
 
-## Your Data Sources (in priority order)
+## Your Data Sources (in priority order for ROUTING decisions)
 1. **Triage Rules** — high-confidence rule-based routing (100% confidence when matched)
-2. **Classifier Predictions** — a trained ML model (80.7% accuracy, 226 support groups) that predicts \
-the best support group based on ticket title, description, location, and classification
-3. **Structured Knowledge Graph** — pre-extracted escalation paths, priority rules, \
-troubleshooting procedures, and system dependencies from service desk documentation
-4. **Knowledge Base Documentation** — raw text from the UPHS and LGH OneNote service desk notebooks
-5. **Historical Ticket Data** — similar incidents that have been resolved in the past
-6. **Referenced Ticket Data** — full details of any specific ticket (IR/SR) mentioned in the conversation
+2. **Referenced Ticket Data** — full details of any specific ticket (IR/SR) mentioned, including \
+its current support group and resolved location
+3. **Matching Historical Tickets** — similar past incidents WITH the support group they were actually \
+assigned to. When several similar tickets went to the same group, that is strong corroborating evidence
+4. **Knowledge Base Documentation** — troubleshooting/routing guidance from the UPHS and LGH OneNote \
+service desk notebooks
+5. **Structured Knowledge Graph** — pre-extracted escalation paths, priority rules, \
+troubleshooting procedures, and system dependencies
+6. **Classifier Predictions** — a trained ML model that SUGGESTS a support group. Treat this as ONE \
+advisory hint only, NOT an authority — it is frequently wrong and must be corroborated (see below)
 
 ## Response Guidelines
 
@@ -80,17 +100,43 @@ troubleshooting procedures, and system dependencies from service desk documentat
 - Report comment details EXACTLY as provided — include the author name, date, and text verbatim
 - NEVER fabricate or paraphrase comment content; only report what is explicitly in the data
 
-**Classifier predictions:**
-- Confidence >80%: Present confidently as "Recommended: [group] (confidence%)"
-- Confidence 50-80%: Present with alternatives, suggest analyst verify
-- Confidence <50%: Note uncertainty, recommend manual review of alternatives
-- Method "triage_rule": Present as a high-confidence rule-based match (no alternatives needed)
+**How to treat the Classifier (IMPORTANT — be skeptical):**
+- The classifier is a suggestion, not a decision. Do NOT lead with it or present it as "the answer."
+- ALWAYS corroborate the classifier's group against: (a) the groups that similar historical tickets \
+were actually assigned to, (b) the routing guidance in documentation, and (c) the ticket's location/site.
+- If the classifier AGREES with the matching tickets and/or documentation, you may present that group \
+with normal confidence (still cite the corroborating evidence, not the classifier alone).
+- If the classifier CONFLICTS with the matching tickets or documentation, TRUST the documentation and \
+the historical-ticket evidence over the classifier, and say why.
+- **Confidence < 50% (low):** treat the classifier prediction as barely more than a guess. Lead your \
+routing reasoning with documentation and the support groups seen on similar tickets. Present the \
+classifier only as "a low-confidence hint" and explicitly recommend the analyst verify.
+- **Confidence ≥ 50%:** you may mention it, but still require corroboration before endorsing it.
+- Method "triage_rule": this is a deterministic rule match (not the ML classifier) — it IS reliable.
 
-**When information conflicts:**
-- Triage rules override all other sources
-- Classifier predictions take priority over documentation for routing decisions
-- Knowledge graph procedures take priority for troubleshooting steps
-- Historical tickets are supplementary context, not authoritative
+**When information conflicts (routing):**
+- Triage rules override all other sources.
+- Documentation + the support groups actually used on matching historical tickets outrank the classifier.
+- The classifier is the LOWEST-priority routing signal and must never override documentation or \
+consistent historical-ticket evidence.
+- Knowledge graph procedures take priority for troubleshooting steps.
+
+## Location & Site Routing (UPHS vs LGH) — CRITICAL
+Penn Medicine spans TWO separate organizations with NON-interchangeable support groups:
+- **UPHS** (University of Pennsylvania Health System): HUP, PAH, PCAM, PPMC, CCH, Presbyterian, \
+Perelman, PennChart, MyPennMedicine, Penn Medicine at Home, PMDH/Doylestown, etc.
+- **LGH** (Lancaster General Health): LGH, LGHP, Lancaster, MyLGHealth, Women & Babies, lha.org, \
+lgh.org, groups under the "LGH\\..." hierarchy.
+
+Rules:
+- NEVER recommend an LGH support group for a UPHS ticket/query, or a UPHS group for an LGH ticket/query.
+- Use the ticket's **resolved location** and the **Detected Site** provided in the context to determine \
+the organization. If the user query itself names a site/system, use that.
+- If a "SITE MISMATCH" warning appears in the context (the classifier's group belongs to the other \
+organization), you MUST reject that group and instead choose a same-site group supported by \
+documentation or matching tickets — or state that you cannot confidently route and recommend the \
+analyst confirm the site.
+- If the site is genuinely unknown/ambiguous, say so and ask the analyst to confirm before routing.
 
 **When you don't have enough information:**
 - Say so clearly — do not guess or fabricate
@@ -201,6 +247,11 @@ class ChatbotService:
                 graph_result.get("systems_matched", []),
             )
 
+        # Step 1.5: Detect the organization/site (UPHS vs LGH) for this request
+        # and derive the documentation notebook filter.
+        detected_site = self._compute_detected_site(message, referenced_tickets)
+        notebook = notebook_for_site(detected_site)
+
         # Step 2: Decide retrieval strategy based on available context
         has_graph_context = bool(graph_result and graph_result.get("has_sufficient_context"))
         has_referenced_ticket = bool(referenced_tickets and any(
@@ -234,14 +285,14 @@ class ChatbotService:
             query_embedding = await self._databricks.generate_embedding(message)
             ticket_results = []
             doc_results = self._vector_store.find_similar_documentation(
-                query_embedding, top_k=top_k_docs
+                query_embedding, top_k=top_k_docs, notebook=notebook
             )
         else:
             # Full fallback — need both doc and ticket similarity
             logger.info("Insufficient context — running full text similarity search")
             query_embedding = await self._databricks.generate_embedding(message)
             doc_results = self._vector_store.find_similar_documentation(
-                query_embedding, top_k=top_k_docs
+                query_embedding, top_k=top_k_docs, notebook=notebook
             )
             ticket_results = self._vector_store.find_similar_by_embedding(
                 query_embedding, top_k=top_k_tickets
@@ -250,12 +301,20 @@ class ChatbotService:
         # Step 3.5: Run classifier on referenced tickets (conditional — only when tickets detected)
         classifier_results = self._classify_referenced_tickets(referenced_tickets)
 
+        # Step 3.6: If the classifier is low-confidence, widen retrieval and
+        # emphasize documentation (site-filtered) over the weak classifier hint.
+        doc_results, ticket_results, _widened = await self._widen_retrieval_if_low_confidence(
+            message, classifier_results, query_embedding,
+            doc_results, ticket_results, top_k_docs, top_k_tickets, notebook,
+        )
+
         # Step 4: Build source citations
         sources = self._build_sources(graph_result, doc_results, ticket_results, referenced_tickets)
 
         # Step 5: Build the context string and LLM messages
         context = self._build_context(
-            graph_context, doc_results, ticket_results, referenced_tickets, classifier_results
+            graph_context, doc_results, ticket_results, referenced_tickets,
+            classifier_results, detected_site,
         )
         llm_messages = self._build_llm_messages(session_id, context)
 
@@ -309,6 +368,93 @@ class ChatbotService:
         )
 
     # ── Private Helpers ───────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_detected_site(
+        message: str,
+        referenced_tickets: list[dict[str, Any]] | None,
+    ) -> str | None:
+        """
+        Determine the organization/site (UPHS vs LGH) for the whole request.
+
+        Combines the user's query text with the resolved location + title of any
+        referenced tickets. Referenced-ticket location is the strongest signal,
+        so it is included first.
+        """
+        fields: list[str] = []
+        if referenced_tickets:
+            for t in referenced_tickets:
+                if t.get("_not_found") or t.get("_error"):
+                    continue
+                loc = extract_location_path(t) or ""
+                fields.append(loc)
+                fields.append(str(t.get("title", "")))
+        fields.append(message)
+        return detect_site(*fields)
+
+    @staticmethod
+    def _is_low_confidence(classifier_results: list[dict[str, Any]]) -> bool:
+        """
+        True if any referenced ticket got a low-confidence *classifier* result.
+
+        A 'triage_rule' match is deterministic/reliable and does NOT count as
+        low confidence.
+        """
+        return any(
+            r.get("method") == "classifier"
+            and r.get("confidence", 1.0) <= CLASSIFIER_LOW_CONFIDENCE
+            for r in classifier_results
+        )
+
+    async def _widen_retrieval_if_low_confidence(
+        self,
+        message: str,
+        classifier_results: list[dict[str, Any]],
+        query_embedding: list[float] | None,
+        doc_results: list[dict[str, Any]],
+        ticket_results: list[dict[str, Any]],
+        top_k_docs: int,
+        top_k_tickets: int,
+        notebook: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+        """
+        When the classifier is low-confidence, pull MORE documentation and
+        similar tickets so the LLM can rely on that evidence instead of the weak
+        classifier hint. Documentation is (re)fetched even if it was skipped
+        earlier, honoring the notebook/site filter.
+
+        Returns (doc_results, ticket_results, widened).
+        """
+        if not self._is_low_confidence(classifier_results):
+            return doc_results, ticket_results, False
+
+        widened_docs = min(
+            top_k_docs * LOW_CONFIDENCE_RETRIEVAL_MULTIPLIER, LOW_CONFIDENCE_MAX_DOCS
+        )
+        widened_tickets = min(
+            top_k_tickets * LOW_CONFIDENCE_RETRIEVAL_MULTIPLIER, LOW_CONFIDENCE_MAX_TICKETS
+        )
+        logger.info(
+            "Low classifier confidence — widening retrieval to %d docs / %d tickets "
+            "and emphasizing documentation.",
+            widened_docs, widened_tickets,
+        )
+
+        if query_embedding is None:
+            query_embedding = await self._databricks.generate_embedding(message)
+
+        # Always (re)fetch documentation on the low-confidence path — this is the
+        # evidence we want the LLM to lean on.
+        doc_results = self._vector_store.find_similar_documentation(
+            query_embedding, top_k=widened_docs, notebook=notebook
+        )
+        # Fetch more similar tickets only if we don't already have a fuller set.
+        if len(ticket_results) < widened_tickets:
+            ticket_results = self._vector_store.find_similar_by_embedding(
+                query_embedding, top_k=widened_tickets
+            )
+
+        return doc_results, ticket_results, True
 
     async def _fetch_referenced_tickets(self, message: str) -> list[dict[str, Any]]:
         """
@@ -420,11 +566,17 @@ class ChatbotService:
 
             title = _extract_str(ticket.get("title") or ticket.get("shortDescription", ""))
             description = _extract_str(ticket.get("description", ""))
-            location = _extract_str(ticket.get("location", ""))
+            # Resolve the location to its full parent\child path (GUID → fullname)
+            # using the same resolver as Feature #3, falling back to the leaf.
+            location = extract_location_path(ticket) or _extract_str(ticket.get("location", ""))
             classification = _extract_str(
                 ticket.get("classificationPath") or ticket.get("classification", "")
             )
             source = _extract_str(ticket.get("source", ""))
+
+            # Detect the ticket's organization/site (UPHS vs LGH) for the
+            # cross-site routing guardrail.
+            ticket_site = detect_site(location, title, description)
 
             try:
                 # Step 1: Check specific triage rules
@@ -440,6 +592,10 @@ class ChatbotService:
                         "support_group_guid": group_guid,
                         "confidence": 1.0,
                         "alternatives": [],
+                        "location": location,
+                        "ticket_site": ticket_site,
+                        "predicted_group_site": group_site(group_name),
+                        "site_mismatch": sites_conflict(ticket_site, group_site(group_name)),
                     })
                     logger.info(
                         "Classifier (triage rule) for %s: %s", ticket_id, group_name
@@ -456,6 +612,10 @@ class ChatbotService:
                         "support_group_guid": sd_guid,
                         "confidence": 1.0,
                         "alternatives": [],
+                        "location": location,
+                        "ticket_site": ticket_site,
+                        "predicted_group_site": None,  # Service Desk is site-neutral
+                        "site_mismatch": False,
                     })
                     logger.info(
                         "Classifier (SD triage) for %s: Service Desk", ticket_id
@@ -474,15 +634,21 @@ class ChatbotService:
                 )
 
                 if predictions:
-                    top = predictions[0]
-                    top_group = top["support_group"]
-                    top_confidence = top["confidence"]
+                    # Site-aware selection: if the top pick belongs to the other
+                    # organization, prefer the best same-site / site-neutral
+                    # prediction (mirrors Feature #3's guardrail).
+                    chosen, site_adjusted = self._select_site_aware_prediction(
+                        predictions, ticket_site
+                    )
+                    top_group = chosen["support_group"]
+                    top_confidence = chosen["confidence"]
                     top_guid = resolve_group_guid(top_group, support_groups)
+                    predicted_site = group_site(top_group)
 
                     alternatives = [
                         {"support_group": p["support_group"], "confidence": p["confidence"]}
-                        for p in predictions[1:]
-                        if p["confidence"] > 0.001
+                        for p in predictions
+                        if p is not chosen and p["confidence"] > 0.001
                     ]
 
                     results.append({
@@ -492,10 +658,15 @@ class ChatbotService:
                         "support_group_guid": top_guid,
                         "confidence": top_confidence,
                         "alternatives": alternatives,
+                        "location": location,
+                        "ticket_site": ticket_site,
+                        "predicted_group_site": predicted_site,
+                        "site_mismatch": sites_conflict(ticket_site, predicted_site),
+                        "site_adjusted": site_adjusted,
                     })
                     logger.info(
-                        "Classifier for %s: %s (confidence=%.3f)",
-                        ticket_id, top_group, top_confidence,
+                        "Classifier for %s: %s (confidence=%.3f, site=%s, adjusted=%s)",
+                        ticket_id, top_group, top_confidence, ticket_site, site_adjusted,
                     )
                 else:
                     logger.warning("Classifier returned no predictions for %s", ticket_id)
@@ -504,6 +675,30 @@ class ChatbotService:
                 logger.exception("Classifier failed for ticket %s", ticket_id)
 
         return results
+
+    @staticmethod
+    def _select_site_aware_prediction(
+        predictions: list[dict[str, Any]],
+        ticket_site: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        """
+        Pick the classifier prediction to surface, avoiding UPHS/LGH mismatch.
+
+        Returns (chosen_prediction, site_adjusted). If the ticket site is
+        unknown or the top prediction is same-site/site-neutral, the top
+        prediction is returned unchanged. If the top prediction conflicts with
+        the ticket site, the highest-ranked non-conflicting prediction is
+        promoted; if none exists, the original top is kept (site_adjusted=False).
+        """
+        top = predictions[0]
+        if ticket_site is None:
+            return top, False
+        if not sites_conflict(ticket_site, group_site(top["support_group"])):
+            return top, False
+        for pred in predictions:
+            if not sites_conflict(ticket_site, group_site(pred["support_group"])):
+                return pred, True
+        return top, False
 
     @staticmethod
     def _format_classifier_results_for_context(
@@ -522,7 +717,14 @@ class ChatbotService:
             return ""
 
         lines: list[str] = []
-        lines.append("=== CLASSIFIER PREDICTIONS (Support Group Recommendation) ===")
+        lines.append("=== CLASSIFIER HINTS (ADVISORY — corroborate before using) ===")
+        lines.append(
+            "The following are ML classifier suggestions, NOT decisions. A prediction "
+            "with method 'classifier' is only a hint and is often wrong; corroborate it "
+            "against the documentation and the groups used on matching historical tickets "
+            "before endorsing it. A prediction with method 'triage_rule' is a reliable "
+            "deterministic rule match."
+        )
 
         for result in classifier_results:
             ticket_id = result["ticket_id"]
@@ -531,16 +733,48 @@ class ChatbotService:
             confidence = result["confidence"]
             guid = result["support_group_guid"]
             alternatives = result.get("alternatives", [])
+            ticket_site = result.get("ticket_site")
+            predicted_group_site = result.get("predicted_group_site")
+            site_mismatch = result.get("site_mismatch", False)
+            site_adjusted = result.get("site_adjusted", False)
 
             lines.append(f"\nTicket: {ticket_id}")
-            lines.append(f"  Recommended Group: {group}")
+            if ticket_site:
+                lines.append(f"  Detected Site: {ticket_site}")
+
+            if method == "triage_rule":
+                lines.append(f"  Rule-based routing (RELIABLE): {group}")
+            else:
+                low = confidence <= CLASSIFIER_LOW_CONFIDENCE
+                label = "LOW-CONFIDENCE hint" if low else "Suggested group (advisory)"
+                lines.append(f"  {label}: {group}")
+                if low:
+                    lines.append(
+                        "  ⚠ Confidence is below 50% — treat this as barely a guess. "
+                        "Base your routing on documentation and matching historical tickets."
+                    )
             lines.append(f"  Confidence: {confidence:.1%}")
             lines.append(f"  Method: {method}")
+            if predicted_group_site:
+                lines.append(f"  Predicted Group Site: {predicted_group_site}")
             if guid:
                 lines.append(f"  GUID: {guid}")
 
+            if site_adjusted:
+                lines.append(
+                    "  ↪ SITE-ADJUSTED: the classifier's top pick belonged to the other "
+                    "organization; a same-site option was surfaced instead."
+                )
+            if site_mismatch:
+                lines.append(
+                    f"  ⚠ SITE MISMATCH: this group appears to belong to a different "
+                    f"organization than the {ticket_site or 'ticket'}. Do NOT route "
+                    f"cross-site — reject this group and use a same-site option or defer "
+                    f"to documentation."
+                )
+
             if alternatives:
-                lines.append("  Alternatives:")
+                lines.append("  Alternatives (also advisory):")
                 for alt in alternatives[:4]:
                     lines.append(
                         f"    - {alt['support_group']} ({alt['confidence']:.1%})"
@@ -606,13 +840,27 @@ class ChatbotService:
                 )
             )
 
-        # Ticket sources (from similarity search)
+        # Ticket sources (from similarity search) — now enriched with the
+        # historical ticket's title, actually-assigned support group, and
+        # location so the analyst can see corroborating routing evidence.
         for ticket in ticket_results:
+            t_title = ticket.get("title", "")
+            t_group = ticket.get("support_group", "")
+            t_location = ticket.get("location", "")
+            preview_bits = []
+            if t_group:
+                preview_bits.append(f"Assigned: {t_group}")
+            if t_location:
+                preview_bits.append(f"Location: {t_location}")
+            if t_title:
+                preview_bits.append(f'"{t_title[:120]}"')
+            preview = " | ".join(preview_bits) if preview_bits else None
             sources.append(
                 SourceCitation(
                     type=SourceType.ticket,
                     title=ticket.get("id", "Unknown"),
                     similarity=ticket.get("similarity", 0.0),
+                    content_preview=preview,
                 )
             )
 
@@ -695,9 +943,25 @@ class ChatbotService:
         ticket_results: list[dict[str, Any]],
         referenced_tickets: list[dict[str, Any]] | None = None,
         classifier_results: list[dict[str, Any]] | None = None,
+        detected_site: str | None = None,
     ) -> str:
         """Build the context string injected into the system prompt."""
         parts: list[str] = []
+
+        # Detected organization/site for the whole request (UPHS vs LGH). Helps
+        # the LLM avoid cross-site routing when no ticket is referenced.
+        if detected_site:
+            parts.append(
+                f"=== DETECTED SITE: {detected_site} ===\n"
+                f"Route only to {detected_site} support groups. Do NOT recommend a "
+                f"group from the other organization."
+            )
+        else:
+            parts.append(
+                "=== DETECTED SITE: UNKNOWN ===\n"
+                "The organization (UPHS vs LGH) could not be determined from the "
+                "request. If routing, confirm the site with the analyst first."
+            )
 
         # Referenced ticket data (highest priority — user explicitly asked about these)
         if referenced_tickets:
@@ -729,13 +993,31 @@ class ChatbotService:
                     f"{content}"
                 )
 
-        # Similar tickets (always included)
+        # Similar tickets (always included) — now enriched with each ticket's
+        # title, the support group it was ACTUALLY assigned to, and its location.
+        # The assigned group is strong corroborating routing evidence and lets
+        # the LLM cross-check (or override) the classifier hint.
         if ticket_results:
-            parts.append("\n=== SIMILAR HISTORICAL TICKETS ===")
+            parts.append("\n=== MATCHING HISTORICAL TICKETS (routing evidence) ===")
+            parts.append(
+                "Each line shows a similar past ticket and the support group it was "
+                "actually assigned to. Consistent groups here are strong evidence — "
+                "weigh them ABOVE the classifier hint."
+            )
             for i, ticket in enumerate(ticket_results, 1):
                 ticket_id = ticket.get("id", "Unknown")
                 similarity = ticket.get("similarity", 0.0)
-                parts.append(f"- Ticket {ticket_id} (similarity: {similarity:.3f})")
+                t_group = ticket.get("support_group", "")
+                t_location = ticket.get("location", "")
+                t_title = ticket.get("title", "")
+                line = f"- {ticket_id} (similarity: {similarity:.3f})"
+                if t_group:
+                    line += f" | Assigned Group: {t_group}"
+                if t_location:
+                    line += f" | Location: {t_location}"
+                if t_title:
+                    line += f' | "{t_title[:120]}"'
+                parts.append(line)
 
         if not parts:
             return "No relevant documentation or similar tickets were found."
@@ -801,6 +1083,10 @@ class ChatbotService:
         if graph_result and graph_result.get("facts"):
             graph_context = self._knowledge_graph.format_facts_for_llm(graph_result)
 
+        # Step 1.5: Detect site (UPHS vs LGH) and derive the doc notebook filter.
+        detected_site = self._compute_detected_site(message, referenced_tickets)
+        notebook = notebook_for_site(detected_site)
+
         # Step 2: Decide retrieval strategy
         has_graph_context = bool(graph_result and graph_result.get("has_sufficient_context"))
         has_referenced_ticket = bool(referenced_tickets and any(
@@ -809,6 +1095,7 @@ class ChatbotService:
 
         skip_doc_search = has_graph_context
         skip_ticket_search = has_graph_context or has_referenced_ticket
+        query_embedding: list[float] | None = None
 
         # Determine which steps will be skipped
         will_fetch_tickets = bool(referenced_tickets and any(
@@ -843,12 +1130,12 @@ class ChatbotService:
             query_embedding = await self._databricks.generate_embedding(message)
             ticket_results = []
             doc_results = self._vector_store.find_similar_documentation(
-                query_embedding, top_k=top_k_docs
+                query_embedding, top_k=top_k_docs, notebook=notebook
             )
         else:
             query_embedding = await self._databricks.generate_embedding(message)
             doc_results = self._vector_store.find_similar_documentation(
-                query_embedding, top_k=top_k_docs
+                query_embedding, top_k=top_k_docs, notebook=notebook
             )
             ticket_results = self._vector_store.find_similar_by_embedding(
                 query_embedding, top_k=top_k_tickets
@@ -883,10 +1170,18 @@ class ChatbotService:
         # Run classifier on referenced tickets
         classifier_results = self._classify_referenced_tickets(referenced_tickets)
 
+        # If the classifier is low-confidence, widen retrieval and emphasize
+        # documentation (site-filtered) over the weak classifier hint.
+        doc_results, ticket_results, _widened = await self._widen_retrieval_if_low_confidence(
+            message, classifier_results, query_embedding,
+            doc_results, ticket_results, top_k_docs, top_k_tickets, notebook,
+        )
+
         # Build sources and context
         sources = self._build_sources(graph_result, doc_results, ticket_results, referenced_tickets)
         context = self._build_context(
-            graph_context, doc_results, ticket_results, referenced_tickets, classifier_results
+            graph_context, doc_results, ticket_results, referenced_tickets,
+            classifier_results, detected_site,
         )
         llm_messages = self._build_llm_messages(session_id, context)
 
