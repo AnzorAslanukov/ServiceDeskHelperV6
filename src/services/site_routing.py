@@ -32,6 +32,45 @@ NOTEBOOK_UPHS = "uphs_notebook"
 NOTEBOOK_LGH = "lgh_notebook"
 
 
+# ── Non-assignable holding / intake queues ────────────────────────────
+# "Validation" (a.k.a. "Service Desk\Validation" / "Service Desk Validation")
+# is the intake/triage queue where NEW, unassigned tickets land while awaiting
+# routing. It is NOT a real support group and must NEVER be recommended as a
+# routing target. Feature #3 already excludes it from the assignable-groups
+# list (see exploration/output/assignable_support_groups.json, verified by
+# test_load_support_groups_validation_excluded); this constant lets Feature #2
+# apply the same guardrail to the LLM-facing context.
+#
+# Values are normalized (lower-cased, backslash- or space-separated variants)
+# for comparison by is_holding_queue().
+NON_ASSIGNABLE_QUEUES: frozenset[str] = frozenset(
+    {
+        "validation",
+        "service desk\\validation",
+        "service desk validation",
+    }
+)
+
+
+def is_holding_queue(group_name: str | None) -> bool:
+    """
+    Return True if ``group_name`` is a non-assignable intake/holding queue.
+
+    Recognizes "Validation" whether it arrives bare, as the full path
+    "Service Desk\\Validation", or as the display form "Service Desk
+    Validation". Matching is case-insensitive and whitespace-tolerant. A blank
+    or unknown group returns False (it is not a known holding queue).
+    """
+    if not group_name:
+        return False
+    name = group_name.strip().lower()
+    if name in NON_ASSIGNABLE_QUEUES:
+        return True
+    # Also treat a bare trailing "\validation" leaf (e.g. under any parent) as
+    # the holding queue, so unexpected path prefixes still get caught.
+    return name.endswith("\\validation")
+
+
 # ── Keyword signals ───────────────────────────────────────────────────
 # Lower-cased substrings. Order/spacing chosen to avoid false positives:
 # each entry is matched as a plain substring against lower-cased text.

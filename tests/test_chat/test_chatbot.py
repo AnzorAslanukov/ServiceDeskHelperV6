@@ -641,6 +641,84 @@ def test_format_ticket_truncates_long_description():
     assert len(desc_line) < 520  # "Description: " + 500 + "..."
 
 
+# ── Validation Holding-Queue Guardrail ────────────────────────────────
+
+
+class TestValidationQueueGuardrail:
+    """Feature #2 must never confirm/recommend the Validation intake queue."""
+
+    def test_referenced_ticket_in_validation_is_annotated(self):
+        """A ticket currently in Validation is flagged as a holding queue."""
+        ticket = {
+            "id": "IR10729451",
+            "title": "PAS/R1 cannot access Media tab through Guesthouse",
+            "supportGroup": "Validation",
+        }
+        formatted = ChatbotService._format_ticket_for_context(ticket)
+
+        assert "Support Group: Validation" in formatted
+        assert "INTAKE/HOLDING QUEUE" in formatted
+        assert "NOT a valid routing target" in formatted
+
+    def test_referenced_ticket_real_group_not_annotated(self):
+        """A real support group is shown plainly, without the holding warning."""
+        ticket = {
+            "id": "IR1959493",
+            "title": "Printer jam",
+            "supportGroup": "EUS\\HUP",
+        }
+        formatted = ChatbotService._format_ticket_for_context(ticket)
+
+        assert "Support Group: EUS\\HUP" in formatted
+        assert "INTAKE/HOLDING QUEUE" not in formatted
+
+    def test_build_context_flags_validation_ticket(self):
+        """_build_context surfaces the holding-queue warning for the ticket."""
+        ticket = {
+            "id": "IR10729451",
+            "title": "PAS/R1 cannot access Media tab",
+            "supportGroup": "Service Desk\\Validation",
+        }
+        context = ChatbotService._build_context("", [], [], [ticket])
+
+        assert "REFERENCED TICKET DATA" in context
+        assert "IR10729451" in context
+        assert "INTAKE/HOLDING QUEUE" in context
+
+    def test_classifier_hint_validation_relabeled(self):
+        """A classifier hint of Validation is relabeled as not-a-valid-target."""
+        results = [
+            {
+                "ticket_id": "IR10729451",
+                "method": "classifier",
+                "support_group": "Validation",
+                "support_group_guid": "val-guid",
+                "confidence": 0.62,
+                "alternatives": [
+                    {"support_group": "Professional Billing (Resolute PB)", "confidence": 0.35},
+                ],
+            }
+        ]
+        formatted = ChatbotService._format_classifier_results_for_context(results)
+
+        assert "NOT A VALID TARGET" in formatted
+        # The real alternative is still surfaced for the analyst.
+        assert "Professional Billing (Resolute PB)" in formatted
+
+    def test_select_site_aware_skips_holding_queue(self):
+        """_select_site_aware_prediction promotes the first non-holding group."""
+        predictions = [
+            {"support_group": "Validation", "confidence": 0.70},
+            {"support_group": "EUS\\HUP", "confidence": 0.25},
+        ]
+        chosen, adjusted = ChatbotService._select_site_aware_prediction(
+            predictions, ticket_site=None
+        )
+
+        assert chosen["support_group"] == "EUS\\HUP"
+        assert adjusted is True
+
+
 # ── Smart Skip Logic ──────────────────────────────────────────────────
 
 

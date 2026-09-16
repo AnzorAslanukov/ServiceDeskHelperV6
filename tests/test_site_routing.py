@@ -11,10 +11,35 @@ from src.services.site_routing import (
     SITE_UPHS,
     detect_site,
     group_site,
+    is_holding_queue,
     notebook_for_site,
     site_for_location_path,
     sites_conflict,
 )
+
+
+# ── is_holding_queue ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "group, expected",
+    [
+        ("Validation", True),
+        ("validation", True),
+        ("  VALIDATION  ", True),
+        ("Service Desk\\Validation", True),
+        ("service desk\\validation", True),
+        ("Service Desk Validation", True),
+        ("Some Parent\\Validation", True),
+        ("Professional Billing (Resolute PB)", False),
+        ("Service Desk", False),
+        ("EUS\\HUP", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_holding_queue(group, expected):
+    assert is_holding_queue(group) is expected
 
 
 # ── detect_site ───────────────────────────────────────────────────────

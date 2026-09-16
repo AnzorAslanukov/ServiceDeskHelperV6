@@ -41,6 +41,7 @@ from src.services.local_vector_store import LocalVectorStore
 from src.services.site_routing import (
     detect_site,
     group_site,
+    is_holding_queue,
     notebook_for_site,
     site_for_location_path,
     sites_conflict,
@@ -95,7 +96,13 @@ advisory hint only, NOT an authority — it is frequently wrong and must be corr
 
 **When a ticket is referenced:**
 - Analyze its current state (status, priority, support group, description)
-- If it appears to already be assigned to the correct group, confirm that
+- If it appears to already be assigned to the correct REAL support group, confirm that
+- **Validation / Service Desk\\Validation is the intake queue where UNASSIGNED tickets \
+wait for triage — it is NEVER a valid recommendation.** If a referenced ticket is currently \
+in Validation (or any queue flagged as an INTAKE/HOLDING QUEUE), do NOT confirm it as correct: \
+the ticket still needs routing. Recommend a real support group based on documentation, matching \
+historical tickets, and the site. If you cannot confidently determine one, say so and ask for the \
+specific detail you need (just as you would for an unknown site) — do NOT fall back to Validation.
 - If priority seems mismatched with the issue severity, flag it
 - Note if the ticket appears stale (very old with no recent updates)
 - Report comment details EXACTLY as provided — include the author name, date, and text verbatim
@@ -702,21 +709,33 @@ class ChatbotService:
         """
         Pick the classifier prediction to surface, avoiding UPHS/LGH mismatch.
 
-        Returns (chosen_prediction, site_adjusted). If the ticket site is
-        unknown or the top prediction is same-site/site-neutral, the top
-        prediction is returned unchanged. If the top prediction conflicts with
-        the ticket site, the highest-ranked non-conflicting prediction is
-        promoted; if none exists, the original top is kept (site_adjusted=False).
+        Returns (chosen_prediction, site_adjusted). Holding/intake queues
+        (Validation) are never surfaced — the best non-holding prediction is
+        promoted instead. If the ticket site is unknown or the chosen
+        prediction is same-site/site-neutral, it is returned unchanged. If it
+        conflicts with the ticket site, the highest-ranked non-conflicting,
+        non-holding prediction is promoted; if none exists, the original
+        non-holding top is kept (site_adjusted=False).
         """
-        top = predictions[0]
+        # Never let the intake/holding queue (Validation) be a suggestion.
+        assignable = [
+            p for p in predictions if not is_holding_queue(p["support_group"])
+        ]
+        if not assignable:
+            # Every prediction was a holding queue — keep the raw top so the
+            # caller/LLM at least sees the (annotated) data, but this is rare.
+            return predictions[0], False
+
+        top = assignable[0]
+        adjusted = top is not predictions[0]
         if ticket_site is None:
-            return top, False
+            return top, adjusted
         if not sites_conflict(ticket_site, group_site(top["support_group"])):
-            return top, False
-        for pred in predictions:
+            return top, adjusted
+        for pred in assignable:
             if not sites_conflict(ticket_site, group_site(pred["support_group"])):
                 return pred, True
-        return top, False
+        return top, adjusted
 
     @staticmethod
     def _format_classifier_results_for_context(
@@ -759,6 +778,24 @@ class ChatbotService:
             lines.append(f"\nTicket: {ticket_id}")
             if ticket_site:
                 lines.append(f"  Detected Site: {ticket_site}")
+
+            # Defensive: if any path produced a holding/intake queue (Validation),
+            # never present it as a routing suggestion.
+            if is_holding_queue(group):
+                lines.append(
+                    f"  ⚠ NOT A VALID TARGET: '{group}' is an intake/holding queue "
+                    f"(unassigned), not a real support group. Do NOT recommend it — "
+                    f"route based on documentation and matching historical tickets."
+                )
+                if guid:
+                    lines.append(f"  GUID: {guid}")
+                if alternatives:
+                    lines.append("  Alternatives (also advisory):")
+                    for alt in alternatives[:4]:
+                        lines.append(
+                            f"    - {alt['support_group']} ({alt['confidence']:.1%})"
+                        )
+                continue
 
             if method == "triage_rule":
                 lines.append(f"  Rule-based routing (RELIABLE): {group}")
@@ -911,7 +948,19 @@ class ChatbotService:
             lines.append(f"Priority: {_extract(ticket['priority'])}")
         if ticket.get("supportGroup") or ticket.get("tierQueue"):
             sg = ticket.get("supportGroup") or ticket.get("tierQueue")
-            lines.append(f"Support Group: {_extract(sg)}")
+            sg_name = _extract(sg)
+            if is_holding_queue(sg_name):
+                # Validation / Service Desk\Validation is the intake queue for
+                # UNASSIGNED tickets — it is NOT a real support group. Annotate
+                # it so the LLM never "confirms" it as the correct routing.
+                lines.append(
+                    f"Support Group: {sg_name}  "
+                    f"⚠ (INTAKE/HOLDING QUEUE — this ticket is UNASSIGNED and "
+                    f"awaiting triage. Validation is NOT a valid routing target; "
+                    f"the ticket still needs to be routed to a real support group.)"
+                )
+            else:
+                lines.append(f"Support Group: {sg_name}")
         if ticket.get("affectedUser"):
             lines.append(f"Affected User: {_extract(ticket['affectedUser'])}")
         if ticket.get("assignedToUser"):
