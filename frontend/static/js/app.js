@@ -880,7 +880,11 @@ function sendChatMessage(evt) {
                         }
                         fullText += token;
                         bubbleDiv.innerHTML = _formatMarkdown(fullText);
-                        _scrollChatToBottom();
+                        // NOTE: Do NOT auto-scroll on each token. The response
+                        // start was already scrolled into view when the bubble
+                        // was appended; auto-scrolling here would keep yanking
+                        // the view to the bottom and hide the beginning of the
+                        // response while it generates.
                     } else if (eventType === 'ticket_data') {
                         ticketDataList = JSON.parse(eventData);
                     } else if (eventType === 'sources') {
@@ -965,7 +969,10 @@ function _finalizeChatStream(msgDiv, bubbleDiv, fullText, sources, ticketDataLis
         }
     }
 
-    _scrollChatToBottom();
+    // NOTE: Intentionally do NOT auto-scroll to the bottom when the stream
+    // finishes. The user should be able to read the response from the point
+    // they left off (the start was scrolled into view when generation began)
+    // without the view jumping to the end.
     _chatSending = false;
     _setChatSendEnabled(true);
     var input = document.getElementById('chatInput');
