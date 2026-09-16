@@ -71,6 +71,13 @@ def test_notebook_for_site():
         ("EUS\\CCH\\CCH Telecom", SITE_UPHS),
         ("Service Desk", None),
         ("Applications", None),
+        # Short group aliases used by KB/KG text (no path or campus marker).
+        # 'PC Techs' is the LGH-only PC Technicians structure.
+        ("PC Techs", SITE_LGH),
+        ("PC Techs per location", SITE_LGH),
+        ("PC Technicians (LGH)", SITE_LGH),
+        ("LGH\\Shared Services (LGH)\\PC Technicians (LGH)\\Hospital (LGH)", SITE_LGH),
+        ("Field Services", SITE_UPHS),
     ],
 )
 def test_group_site(group, expected):

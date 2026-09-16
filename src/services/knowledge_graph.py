@@ -22,6 +22,8 @@ from typing import Any
 
 import networkx as nx
 
+from src.services.site_routing import group_site, sites_conflict
+
 logger = logging.getLogger(__name__)
 
 # Default path to the knowledge graph JSON file
@@ -179,12 +181,19 @@ class KnowledgeGraphService:
             "has_sufficient_context": has_sufficient,
         }
 
-    def format_facts_for_llm(self, query_result: dict[str, Any]) -> str:
+    def format_facts_for_llm(
+        self, query_result: dict[str, Any], detected_site: str | None = None
+    ) -> str:
         """
         Format knowledge graph query results into a string for the LLM context.
 
         Args:
             query_result: Output from query_for_chat().
+            detected_site: The request's detected organization/site (UPHS or LGH),
+                or None. When provided, escalation targets that belong to the OTHER
+                organization are flagged with a cross-site mismatch warning so the
+                LLM does not route (e.g.) an LGH-only 'PC Techs' group for a UPHS
+                ticket.
 
         Returns:
             Formatted string ready for injection into the system prompt.
@@ -210,11 +219,25 @@ class KnowledgeGraphService:
         if escalations:
             parts.append("\n--- Escalation Paths ---")
             for esc in escalations:
-                parts.append(
+                target = esc.get("target_team", "N/A")
+                block = (
                     f"• When: {esc.get('condition', 'N/A')}\n"
-                    f"  Escalate to: {esc.get('target_team', 'N/A')}\n"
+                    f"  Escalate to: {target}\n"
                     f"  Urgency: {esc.get('urgency', 'N/A')}"
                 )
+                # Cross-site guardrail: if this escalation target belongs to the
+                # other organization than the detected site, flag it. This catches
+                # short aliases like 'PC Techs' (LGH-only) on a UPHS ticket.
+                if detected_site:
+                    target_site = group_site(target)
+                    if sites_conflict(detected_site, target_site):
+                        block += (
+                            f"\n  ⚠ SITE MISMATCH: '{target}' is a {target_site} group, "
+                            f"but this request is {detected_site}. Do NOT route here — "
+                            f"this escalation path is for the other organization. Use a "
+                            f"{detected_site} group instead."
+                        )
+                parts.append(block)
 
         if priority_rules:
             parts.append("\n--- Priority Rules ---")

@@ -118,6 +118,33 @@ _CAMPUS_SITE: dict[str, str] = {
 }
 
 
+# ── Support-group name aliases → site ─────────────────────────────────
+# The knowledge base and knowledge-graph escalation facts often refer to a
+# support group by a SHORT alias (e.g. "PC Techs") that carries no explicit
+# 'LGH\\...' path and no campus keyword — so path/keyword detection alone
+# returns None (site-neutral) and the cross-site guardrail never fires.
+#
+# These alias keyword sets tag such short names with their real organization.
+# Matched as lower-cased substrings against the group name.
+#
+# 'PC Techs' / 'PC Technicians' is an LGH-only structure
+# ('LGH\\Shared Services (LGH)\\PC Technicians (LGH)\\...'); UPHS uses EUS /
+# Field Services instead. Keep this list conservative — only add names that
+# are unambiguously single-site.
+_LGH_GROUP_KEYWORDS: tuple[str, ...] = (
+    "pc techs",
+    "pc tech",
+    "pc technician",
+    "shared services (lgh)",
+)
+
+_UPHS_GROUP_KEYWORDS: tuple[str, ...] = (
+    "eus\\",
+    "eus ",
+    "field services",
+)
+
+
 def _has_keyword(text: str, keywords: tuple[str, ...]) -> bool:
     return any(kw in text for kw in keywords)
 
@@ -208,6 +235,12 @@ def group_site(group_name: str | None) -> str | None:
     # Top-level 'LGH' or any 'LGH\...' path segment → LGH.
     if name == "lgh" or name.startswith("lgh\\") or "\\lgh\\" in name or name.endswith("\\lgh"):
         return SITE_LGH
+
+    # Short group aliases (e.g. 'PC Techs') that carry no path/campus marker.
+    if _has_keyword(name, _LGH_GROUP_KEYWORDS):
+        return SITE_LGH
+    if _has_keyword(name, _UPHS_GROUP_KEYWORDS):
+        return SITE_UPHS
 
     if _has_keyword(name, _LGH_KEYWORDS):
         return SITE_LGH

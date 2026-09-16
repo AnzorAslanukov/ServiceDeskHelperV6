@@ -225,6 +225,65 @@ def test_format_facts_includes_escalation_paths(kg_service):
     assert "Escalate to:" in formatted
 
 
+def test_format_facts_flags_cross_site_escalation(kg_service):
+    """An LGH-only escalation target on a UPHS request must be flagged.
+
+    Regression (SR10728545): the KG escalation 'PC Techs' is an LGH-only group,
+    but was recommended for a UPHS (PPMC) ticket. With the detected site passed
+    in, the formatter must emit a SITE MISMATCH warning so the LLM rejects it.
+    """
+    result = {
+        "facts": [
+            {
+                "type": "Escalation",
+                "condition": "printer software/driver/mapping issues",
+                "target_team": "PC Techs",
+                "urgency": "High",
+            }
+        ],
+        "systems_matched": ["printer"],
+    }
+    formatted = kg_service.format_facts_for_llm(result, detected_site="UPHS")
+    assert "SITE MISMATCH" in formatted
+    assert "PC Techs" in formatted
+
+
+def test_format_facts_no_mismatch_for_same_site_escalation(kg_service):
+    """No warning when the escalation target matches the detected site."""
+    result = {
+        "facts": [
+            {
+                "type": "Escalation",
+                "condition": "printer software/driver/mapping issues",
+                "target_team": "PC Techs",
+                "urgency": "High",
+            }
+        ],
+        "systems_matched": ["printer"],
+    }
+    # LGH ticket → LGH 'PC Techs' escalation is correct → no warning.
+    formatted = kg_service.format_facts_for_llm(result, detected_site="LGH")
+    assert "SITE MISMATCH" not in formatted
+
+
+def test_format_facts_no_mismatch_when_site_unknown(kg_service):
+    """With no detected site, escalations are shown without a mismatch warning."""
+    result = {
+        "facts": [
+            {
+                "type": "Escalation",
+                "condition": "printer issues",
+                "target_team": "PC Techs",
+                "urgency": "High",
+            }
+        ],
+        "systems_matched": [],
+    }
+    formatted = kg_service.format_facts_for_llm(result, detected_site=None)
+    assert "SITE MISMATCH" not in formatted
+    assert "PC Techs" in formatted
+
+
 def test_format_facts_includes_priority_rules(kg_service):
     """Formatted output should include priority rules."""
     result = kg_service.query_for_chat("PennChart is down for everyone")

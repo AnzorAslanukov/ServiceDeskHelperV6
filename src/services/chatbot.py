@@ -227,6 +227,13 @@ class ChatbotService:
         # Step 0: Detect and fetch referenced tickets
         referenced_tickets = await self._fetch_referenced_tickets(message)
 
+        # Step 0.5: Detect the organization/site (UPHS vs LGH) for this request
+        # and derive the documentation notebook filter. Done BEFORE formatting the
+        # knowledge graph so escalation targets can be flagged for cross-site
+        # mismatch (e.g. an LGH-only 'PC Techs' escalation on a UPHS ticket).
+        detected_site = self._compute_detected_site(message, referenced_tickets)
+        notebook = notebook_for_site(detected_site)
+
         # Step 1: Query knowledge graph for structured facts
         # If we have a referenced ticket, also query using its title for better matches
         kg_query = message
@@ -240,18 +247,15 @@ class ChatbotService:
         graph_result = self._query_knowledge_graph(kg_query)
         graph_context = ""
         if graph_result and graph_result.get("facts"):
-            graph_context = self._knowledge_graph.format_facts_for_llm(graph_result)
+            graph_context = self._knowledge_graph.format_facts_for_llm(
+                graph_result, detected_site=detected_site
+            )
             logger.info(
                 "Knowledge graph returned %d facts (sufficient=%s, systems=%s)",
                 len(graph_result["facts"]),
                 graph_result["has_sufficient_context"],
                 graph_result.get("systems_matched", []),
             )
-
-        # Step 1.5: Detect the organization/site (UPHS vs LGH) for this request
-        # and derive the documentation notebook filter.
-        detected_site = self._compute_detected_site(message, referenced_tickets)
-        notebook = notebook_for_site(detected_site)
 
         # Step 2: Decide retrieval strategy based on available context
         has_graph_context = bool(graph_result and graph_result.get("has_sufficient_context"))
@@ -1091,6 +1095,12 @@ class ChatbotService:
         # Step 0: Detect and fetch referenced tickets
         referenced_tickets = await self._fetch_referenced_tickets(message)
 
+        # Step 0.5: Detect site (UPHS vs LGH) and derive the doc notebook filter.
+        # Done BEFORE formatting the knowledge graph so escalation targets can be
+        # flagged for cross-site mismatch (e.g. LGH-only 'PC Techs' on a UPHS ticket).
+        detected_site = self._compute_detected_site(message, referenced_tickets)
+        notebook = notebook_for_site(detected_site)
+
         # Step 1: Query knowledge graph
         kg_query = message
         if referenced_tickets:
@@ -1102,11 +1112,9 @@ class ChatbotService:
         graph_result = self._query_knowledge_graph(kg_query)
         graph_context = ""
         if graph_result and graph_result.get("facts"):
-            graph_context = self._knowledge_graph.format_facts_for_llm(graph_result)
-
-        # Step 1.5: Detect site (UPHS vs LGH) and derive the doc notebook filter.
-        detected_site = self._compute_detected_site(message, referenced_tickets)
-        notebook = notebook_for_site(detected_site)
+            graph_context = self._knowledge_graph.format_facts_for_llm(
+                graph_result, detected_site=detected_site
+            )
 
         # Step 2: Decide retrieval strategy
         has_graph_context = bool(graph_result and graph_result.get("has_sufficient_context"))
