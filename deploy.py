@@ -8,9 +8,12 @@ Steps performed:
   1. Git push local changes to GitHub
   2. SSH to workstation → git pull
   3. Install any new dependencies
-  4. Stop the running server
-  5. Start the server (detached)
-  6. Verify the server is responding
+  4. (Optional) Update ticket embeddings on the server — prompted; the ~3.1 GB
+     file is rebuilt locally and transferred via SCP (never GitHub), then
+     atomically swapped in BEFORE the restart so the new file is loaded.
+  5. Stop the running server
+  6. Start the server (detached)
+  7. Verify the server is responding
 """
 
 import os
@@ -23,6 +26,15 @@ SERVER = "AslanukA@10.192.46.182"
 PROJECT_DIR = r"C:\projects\service_desk_helper"
 SERVER_URL = "http://10.192.46.182:8000/health"
 SSH_OPTS = "-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
+
+# Local + remote locations of the ticket vector files. These are large
+# (~3.1 GB .npy) and gitignored, so they are transferred OUT-OF-BAND via SCP
+# over the same SSH channel used above — NEVER through GitHub (which would
+# leak company data publicly).
+VECTORS_SUBDIR = r"data\vectors"
+EMBEDDINGS_NAME = "ticket_embeddings.npy"
+METADATA_NAME = "ticket_metadata.json"
+MANIFEST_NAME = "ticket_vectors_manifest.json"
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -89,6 +101,128 @@ def ssh(command):
     return result.returncode == 0, output
 
 
+def scp(local_path, remote_rel_path):
+    """
+    Copy a local file to the remote server via SCP (same host/key as ssh()).
+
+    Args:
+        local_path: absolute local file path.
+        remote_rel_path: path RELATIVE to PROJECT_DIR on the remote (e.g.
+            r"data\\vectors\\ticket_embeddings.npy.tmp").
+
+    Returns (success, output).
+    """
+    remote_abs = f"{PROJECT_DIR}\\{remote_rel_path}"
+    # scp target uses forward-slash host:path form; the Windows path after the
+    # colon is passed through to the remote shell verbatim.
+    full_cmd = f'scp {SSH_OPTS} "{local_path}" {SERVER}:"{remote_abs}"'
+    info(f"scp → {os.path.basename(local_path)} ({_file_size_mb(local_path):.1f} MB)")
+    result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True)
+    output = (result.stdout + result.stderr).strip()
+    if output:
+        for line in output.split("\n"):
+            print(f"    {line}")
+    return result.returncode == 0, output
+
+
+def _file_size_mb(path):
+    """Return a file's size in MB, or 0.0 if it does not exist."""
+    try:
+        return os.path.getsize(path) / (1024 * 1024)
+    except OSError:
+        return 0.0
+
+
+def _local_manifest_sha():
+    """Return the local manifest's (sha256_npy, sha256_meta), or (None, None)."""
+    import json
+    manifest_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        VECTORS_SUBDIR, MANIFEST_NAME,
+    )
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("sha256_npy"), data.get("sha256_meta")
+    except (OSError, ValueError):
+        return None, None
+
+
+def update_embeddings():
+    """
+    Rebuild the local ticket embeddings, then push them to the remote server
+    (checksum-gated) and atomically swap them in — all BEFORE the server is
+    restarted, so the normal deploy restart loads the new file.
+
+    Returns True if the remote embeddings were updated (and therefore a restart
+    is needed to load them), False if skipped or unchanged.
+    """
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    local_emb = os.path.join(project_root, VECTORS_SUBDIR, EMBEDDINGS_NAME)
+    local_meta = os.path.join(project_root, VECTORS_SUBDIR, METADATA_NAME)
+    local_manifest = os.path.join(project_root, VECTORS_SUBDIR, MANIFEST_NAME)
+
+    # 1. Rebuild locally (incremental compute + export + atomic local swap).
+    info("Rebuilding local ticket embeddings (incremental compute + export)...")
+    ok, _ = run_local("python -m exploration.refresh_ticket_embeddings")
+    if not ok:
+        error("Local embeddings refresh failed — skipping remote update.")
+        return False
+    if not (os.path.exists(local_emb) and os.path.exists(local_meta)):
+        error("Local embedding files missing after refresh — skipping remote update.")
+        return False
+    success("Local embeddings rebuilt")
+
+    # 2. Checksum-gate: skip the ~3 GB transfer if the remote already matches.
+    local_npy_sha, local_meta_sha = _local_manifest_sha()
+    if local_npy_sha:
+        remote_manifest_rel = f"{VECTORS_SUBDIR}\\{MANIFEST_NAME}"
+        ok, remote_out = ssh(
+            f"if (Test-Path '{PROJECT_DIR}\\{remote_manifest_rel}') "
+            f"{{ Get-Content '{PROJECT_DIR}\\{remote_manifest_rel}' -Raw }}"
+        )
+        if ok and local_npy_sha in remote_out and (local_meta_sha or "") in remote_out:
+            success("Remote embeddings already match local checksum — no transfer needed.")
+            return False
+
+    # 3. SCP both files (+ manifest) to remote TEMP paths.
+    info(f"Transferring embeddings to {SERVER} (this can take a while)...")
+    ok_emb, _ = scp(local_emb, f"{VECTORS_SUBDIR}\\{EMBEDDINGS_NAME}.tmp")
+    ok_meta, _ = scp(local_meta, f"{VECTORS_SUBDIR}\\{METADATA_NAME}.tmp")
+    if not (ok_emb and ok_meta):
+        error("SCP transfer failed — remote embeddings left unchanged.")
+        return False
+    if os.path.exists(local_manifest):
+        scp(local_manifest, f"{VECTORS_SUBDIR}\\{MANIFEST_NAME}")
+    success("Embeddings transferred to remote temp files")
+
+    # 4. Remote validate + atomic swap (keep .bak). Runs a small Python snippet
+    #    on the server that asserts the .npy row count == metadata length before
+    #    replacing the live files.
+    vdir = f"{PROJECT_DIR}\\{VECTORS_SUBDIR}"
+    py = (
+        "import os,json,numpy as np;"
+        f"d=r'{vdir}';"
+        "e=os.path.join(d,'ticket_embeddings.npy');m=os.path.join(d,'ticket_metadata.json');"
+        "et=e+'.tmp';mt=m+'.tmp';"
+        "a=np.load(et,mmap_mode='r');"
+        "meta=json.load(open(mt,encoding='utf-8'));"
+        "assert a.shape[0]==len(meta),'row/meta mismatch';"
+        "assert a.shape[1]==1024,'bad dims';"
+        "os.replace(m,m+'.bak') if os.path.exists(m) else None;"
+        "os.replace(e,e+'.bak') if os.path.exists(e) else None;"
+        "os.replace(mt,m);os.replace(et,e);"
+        "print('SWAP_OK rows='+str(a.shape[0]))"
+    )
+    ok, out = ssh(f'Set-Location \'{PROJECT_DIR}\'; python -c "{py}"')
+    if ok and "SWAP_OK" in out:
+        success("Remote embeddings validated and swapped into place")
+        return True
+
+    error("Remote validation/swap failed — live files left unchanged (temp files remain).")
+    return False
+
+
 # ── Main Deploy Flow ───────────────────────────────────────────────────
 
 def main():
@@ -96,7 +230,7 @@ def main():
     os.system("")
 
     banner()
-    total_steps = 6
+    total_steps = 7
     errors = []
 
     # Pre-flight: fix git safe.directory (needed when double-clicked from Explorer)
@@ -138,14 +272,36 @@ def main():
     ok, _ = ssh(f"Set-Location '{PROJECT_DIR}'; python -m pip install -r requirements.txt --quiet")
     success("Dependencies up to date")
 
-    # Step 4: Stop server
-    step(4, total_steps, "Stopping current server")
+    # Step 4: Optionally update ticket embeddings (prompted).
+    # Done BEFORE stop/start so the normal restart loads the new file.
+    step(4, total_steps, "Updating ticket embeddings (optional)")
+    try:
+        answer = input(
+            f"  {Colors.YELLOW}Update ticket embeddings on the server? "
+            f"This rebuilds locally and transfers ~3 GB via SCP. [y/N]: {Colors.RESET}"
+        ).strip().lower()
+    except EOFError:
+        answer = "n"
+    if answer in ("y", "yes"):
+        try:
+            if update_embeddings():
+                success("Ticket embeddings updated on server (loads on restart)")
+            else:
+                info("Embeddings not updated (skipped, unchanged, or failed above)")
+        except Exception as e:
+            error(f"Embeddings update raised: {e}")
+            errors.append("embeddings update")
+    else:
+        info("Skipping embeddings update (code-only deploy)")
+
+    # Step 5: Stop server
+    step(5, total_steps, "Stopping current server")
     ssh("Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force")
     success("Server stopped")
     time.sleep(2)
 
-    # Step 5: Start server via background SSH session (only reliable method)
-    step(5, total_steps, "Starting server (background SSH session)")
+    # Step 6: Start server via background SSH session (only reliable method)
+    step(6, total_steps, "Starting server (background SSH session)")
     start_cmd = (
         f'start /b ssh {SSH_OPTS} {SERVER} '
         f'"Set-Location \'{PROJECT_DIR}\'; python -m uvicorn src.main:app --host 0.0.0.0 --port 8000" '
@@ -155,8 +311,8 @@ def main():
     subprocess.Popen(start_cmd, shell=True)
     success("Server starting in background SSH session")
 
-    # Step 6: Verify
-    step(6, total_steps, "Verifying server is responding")
+    # Step 7: Verify
+    step(7, total_steps, "Verifying server is responding")
     info("Waiting for server to start...")
     time.sleep(8)
 
