@@ -12,20 +12,28 @@ Two stages (both reuse the existing, proven scripts):
   1. Compute  — incrementally embed NEW tickets into the Databricks table
                 hive_metastore.embeddings_db.ticket_embeddings
                 (delegates to exploration.populate_ticket_embeddings).
-  2. Export   — re-export that table to local .npy/.json TEMP files, validate
-                them, then ATOMICALLY swap them into place (keeping one .bak)
-                and write a manifest for observability + transfer gating.
+  2. Export   — by default, APPEND only the embedded tickets missing from the
+                local file (read current file, diff IDs against the table,
+                fetch + concatenate only the new rows), then validate and
+                ATOMICALLY swap into place (keeping one .bak) and update the
+                manifest. Use --full-export to rebuild the whole file instead.
 
 Because the app mmaps the .npy at startup and the two files are POSITIONALLY
 aligned (row i of the matrix == metadata[i]), this script never overwrites the
 live files in place: it builds temp files, validates, then os.replace()s them.
 
 Usage:
-    # Full refresh (incremental compute + export + swap) — default
+    # Report how many tickets need vectorizing + a measured time estimate
+    python -m exploration.refresh_ticket_embeddings --status
+
+    # Full refresh (incremental compute + incremental append + swap) — default
     python -m exploration.refresh_ticket_embeddings
 
-    # Skip the Databricks compute step; only re-export the existing table
+    # Skip the Databricks compute step; only append missing rows locally
     python -m exploration.refresh_ticket_embeddings --skip-compute
+
+    # Rebuild the WHOLE local file from the table (recovery / first build)
+    python -m exploration.refresh_ticket_embeddings --full-export
 
     # Limit how many new tickets get embedded in the compute step
     python -m exploration.refresh_ticket_embeddings --limit 5000
@@ -376,6 +384,332 @@ def _fetch_ticket_rows(connection, ticket_table: str):
         cursor.close()
 
 
+def _parse_embedding(raw) -> list | None:
+    """Normalize a raw embedding cell into a 1024-float list, or None if invalid."""
+    if isinstance(raw, np.ndarray):
+        embedding = raw.tolist()
+    elif isinstance(raw, str):
+        try:
+            embedding = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(raw, list):
+        embedding = raw
+    else:
+        return None
+    if len(embedding) != EMBEDDING_DIM:
+        return None
+    return embedding
+
+
+def _row_to_metadata(row_dict: dict) -> dict:
+    """Build the runtime metadata record for one ticket row."""
+    return {
+        "Id": row_dict.get("Id", ""),
+        "Title": row_dict.get("Title", ""),
+        "Description": row_dict.get("Description", ""),
+        "SupportGroup": row_dict.get("SupportGroup", ""),
+        "Location": row_dict.get("Location", ""),
+    }
+
+
+# ── Incremental (append-only) local export helpers ──────────────────────
+
+
+def fetch_table_ids(connection, ticket_table: str) -> set[str]:
+    """Fetch the set of ticket Ids present in the Databricks table (IDs only)."""
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            f"SELECT Id FROM {ticket_table} WHERE embedding IS NOT NULL"
+        )
+        return {row[0] for row in cursor.fetchall() if row[0]}
+    finally:
+        cursor.close()
+
+
+def load_local_matrix_and_metadata(
+    embeddings_path: Path, metadata_path: Path
+):
+    """
+    Load the current local (matrix, metadata, id_set). Returns
+    (None, [], set()) if either file is missing (i.e. first-ever build).
+
+    The matrix is loaded fully into memory (not mmap) because we are going to
+    concatenate onto it and rewrite it.
+    """
+    if not embeddings_path.exists() or not metadata_path.exists():
+        return None, [], set()
+    matrix = np.load(str(embeddings_path))
+    with open(metadata_path, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+    local_ids = {m.get("Id") for m in metadata if m.get("Id")}
+    return matrix, metadata, local_ids
+
+
+def fetch_ticket_rows_by_ids(
+    connection, ticket_table: str, ids: list[str], chunk_size: int = 500
+):
+    """
+    Fetch (embeddings, metadata) for a specific set of ticket Ids using batched
+    ``WHERE Id IN (...)`` queries. Falls back to a full scan + client-side
+    filter if an IN-query fails (e.g. driver/param limits).
+
+    Returns (embeddings_list, metadata_list) aligned by position.
+    """
+    id_set = set(ids)
+    embeddings: list = []
+    metadata: list[dict] = []
+    cols = "Id, Title, Description, SupportGroup, Location, embedding"
+
+    try:
+        cursor = connection.cursor()
+        try:
+            for start in range(0, len(ids), chunk_size):
+                chunk = ids[start:start + chunk_size]
+                in_list = ", ".join("'" + i.replace("'", "''") + "'" for i in chunk)
+                cursor.execute(
+                    f"SELECT {cols} FROM {ticket_table} "
+                    f"WHERE embedding IS NOT NULL AND Id IN ({in_list})"
+                )
+                columns = [desc[0] for desc in cursor.description]
+                for row in cursor.fetchall():
+                    row_dict = dict(zip(columns, row))
+                    emb = _parse_embedding(row_dict.get("embedding"))
+                    if emb is None:
+                        continue
+                    embeddings.append(emb)
+                    metadata.append(_row_to_metadata(row_dict))
+        finally:
+            cursor.close()
+        return embeddings, metadata
+    except Exception as e:  # noqa: BLE001 — robust fallback path
+        print(f"  WHERE-IN fetch failed ({e}); falling back to full scan + filter.")
+        embeddings, metadata = [], []
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                f"SELECT {cols} FROM {ticket_table} WHERE embedding IS NOT NULL"
+            )
+            columns = [desc[0] for desc in cursor.description]
+            for row in cursor.fetchall():
+                row_dict = dict(zip(columns, row))
+                if row_dict.get("Id") not in id_set:
+                    continue
+                emb = _parse_embedding(row_dict.get("embedding"))
+                if emb is None:
+                    continue
+                embeddings.append(emb)
+                metadata.append(_row_to_metadata(row_dict))
+        finally:
+            cursor.close()
+        return embeddings, metadata
+
+
+# ── Stage 2 (incremental): append only missing rows to the local file ───
+
+
+def run_incremental_export_and_swap(min_row_ratio: float, dry_run: bool) -> dict | None:
+    """
+    Append-only local export: fetch ONLY the embedded tickets that are not yet
+    in the local file, concatenate them onto the existing matrix/metadata, then
+    validate and atomically swap. Falls back to a full rebuild if there is no
+    existing local file yet.
+
+    Returns the manifest dict on success, or None on dry-run / no-op.
+    """
+    print(f"\n{'=' * 60}")
+    print("STAGE 2 — Incremental export (append missing rows to local file)")
+    print(f"{'=' * 60}")
+
+    from exploration.export_local_vectors import TICKET_TABLE, get_databricks_connection
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    live_embeddings = OUTPUT_DIR / EMBEDDINGS_NAME
+    live_metadata = OUTPUT_DIR / METADATA_NAME
+    tmp_embeddings = OUTPUT_DIR / (EMBEDDINGS_NAME + ".tmp")
+    tmp_metadata = OUTPUT_DIR / (METADATA_NAME + ".tmp")
+
+    matrix, metadata, local_ids = load_local_matrix_and_metadata(
+        live_embeddings, live_metadata
+    )
+    if matrix is None:
+        print("  No existing local file — falling back to a full export.")
+        return run_export_and_swap(min_row_ratio=min_row_ratio, dry_run=dry_run)
+
+    current_rows = len(metadata)
+    print(f"  Current live file: {current_rows:,} rows")
+
+    connection = get_databricks_connection()
+    try:
+        table_ids = fetch_table_ids(connection, TICKET_TABLE)
+        missing = sorted(table_ids - local_ids)
+        print(f"  Table has {len(table_ids):,} embedded ticket(s); "
+              f"{len(missing):,} missing from local file.")
+
+        if not missing:
+            print("  Local file already up to date — nothing to append.")
+            return None
+
+        if dry_run:
+            print(f"  [DRY RUN] Would append {len(missing):,} row(s) and swap.")
+            return None
+
+        new_embeddings, new_metadata = fetch_ticket_rows_by_ids(
+            connection, TICKET_TABLE, missing
+        )
+        print(f"  Fetched {len(new_metadata):,} new row(s) from Databricks.")
+    finally:
+        connection.close()
+
+    if not new_metadata:
+        print("  No valid new rows fetched — nothing to append.")
+        return None
+
+    new_matrix = np.array(new_embeddings, dtype=np.float32)
+    combined_matrix = np.concatenate([matrix.astype(np.float32), new_matrix], axis=0)
+    combined_metadata = list(metadata) + new_metadata
+    print(f"  New local size: {combined_matrix.shape[0]:,} rows "
+          f"(was {current_rows:,}).")
+
+    # Validate the combined result. current_rows is the floor basis; an append
+    # can only grow, so the safety floor simply guards alignment/dims here.
+    validate_export(combined_matrix, combined_metadata, current_rows, min_row_ratio)
+    print("  Validation passed.")
+
+    with open(tmp_embeddings, "wb") as fh:
+        np.save(fh, combined_matrix)
+    with open(tmp_metadata, "w", encoding="utf-8") as f:
+        json.dump(combined_metadata, f, ensure_ascii=False)
+
+    bak_meta = atomic_swap_with_backup(tmp_metadata, live_metadata)
+    bak_emb = atomic_swap_with_backup(tmp_embeddings, live_embeddings)
+    if bak_emb or bak_meta:
+        print("  Previous files backed up (.bak) for rollback.")
+
+    manifest = build_manifest(
+        live_embeddings, live_metadata,
+        rows=int(combined_matrix.shape[0]),
+        dims=int(combined_matrix.shape[1]),
+    )
+    with open(OUTPUT_DIR / MANIFEST_NAME, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+
+    print(f"\n  Appended {len(new_metadata):,} row(s); "
+          f"local file now has {manifest['rows']:,} rows.")
+    return manifest
+
+
+
+# ── Status / time-estimate command ──────────────────────────────────────
+
+
+def measure_embedding_throughput(sample_texts: list[str]) -> float:
+    """
+    Embed one small batch via the live endpoint and return measured throughput
+    in tickets/second. Reuses populate_ticket_embeddings.generate_embeddings.
+    """
+    from exploration import populate_ticket_embeddings as pte
+
+    if not sample_texts:
+        return 0.0
+    start = time.time()
+    pte.generate_embeddings(sample_texts)
+    elapsed = time.time() - start
+    if elapsed <= 0:
+        return 0.0
+    return len(sample_texts) / elapsed
+
+
+def _format_duration(seconds: float) -> str:
+    """Human-readable duration."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f} min"
+    return f"{seconds / 3600:.1f} hr"
+
+
+def estimate_stage1_seconds(count: int, rate: float, batch_size: int, delay: float) -> float | None:
+    """
+    Estimate Stage 1 embedding time for ``count`` tickets. Uses measured
+    ``rate`` (tickets/sec) when > 0, else a constants-based fallback that
+    assumes ~2s API latency per batch. Returns None when count == 0.
+    """
+    if count <= 0:
+        return None
+    n_batches = (count + batch_size - 1) // batch_size
+    if rate > 0:
+        return (count / rate) + (n_batches * delay)
+    return n_batches * (2.0 + delay)
+
+
+def describe_pending(measure: bool = True) -> dict:
+    """
+    Report, WITHOUT changing anything:
+      - source tickets not yet embedded in Databricks (Stage 1 backlog)
+      - embedded tickets missing from the local file (Stage 2 append backlog)
+      - a time estimate for the Stage 1 embedding work
+
+    When ``measure`` is True, embeds one real sample batch to measure live
+    throughput; otherwise uses the code's known constants.
+    """
+    from exploration import populate_ticket_embeddings as pte
+    from exploration.export_local_vectors import TICKET_TABLE, get_databricks_connection
+
+    print(f"\n{'=' * 60}")
+    print("STATUS — how many tickets need vectorizing")
+    print(f"{'=' * 60}")
+
+    # Stage 1 backlog: source tickets not yet embedded in the table.
+    embedded_ids = pte.get_already_embedded_ids()
+    source_tickets = pte.fetch_source_tickets(exclude_ids=embedded_ids)
+    stage1 = len(source_tickets)
+
+    # Stage 2 backlog: embedded-but-not-local.
+    _m, _meta, local_ids = load_local_matrix_and_metadata(
+        OUTPUT_DIR / EMBEDDINGS_NAME, OUTPUT_DIR / METADATA_NAME
+    )
+    connection = get_databricks_connection()
+    try:
+        table_ids = fetch_table_ids(connection, TICKET_TABLE)
+    finally:
+        connection.close()
+    stage2 = len(table_ids - local_ids)
+
+    # Throughput + estimate for Stage 1 (the expensive embedding work).
+    rate = 0.0
+    if stage1 > 0 and measure:
+        sample = [
+            pte.build_search_text(t.get("Title"), t.get("Description"))
+            for t in source_tickets[:pte.EMBEDDING_BATCH_SIZE]
+        ]
+        sample = [s for s in sample if s.strip()]
+        print(f"  Measuring throughput on a sample of {len(sample)} ticket(s)...")
+        rate = measure_embedding_throughput(sample)
+
+    est_seconds = estimate_stage1_seconds(
+        stage1, rate, pte.EMBEDDING_BATCH_SIZE, pte.DELAY_BETWEEN_BATCHES
+    )
+
+    print(f"\n  Stage 1 — source tickets NOT yet embedded (Databricks): {stage1:,}")
+    print(f"  Stage 2 — embedded tickets MISSING from local file:     {stage2:,}")
+    if rate > 0:
+        print(f"  Measured throughput: {rate:.1f} tickets/sec")
+    if est_seconds is not None:
+        print(f"  Estimated Stage 1 embedding time: ~{_format_duration(est_seconds)}")
+    if stage1 == 0 and stage2 == 0:
+        print("\n  Everything is up to date.")
+
+    return {
+        "stage1_to_embed": stage1,
+        "stage2_to_append": stage2,
+        "tickets_per_sec": rate,
+        "estimated_seconds": est_seconds,
+    }
+
+
+
 
 # ── CLI ────────────────────────────────────────────────────────────────
 
@@ -409,7 +743,34 @@ def main():
         action="store_true",
         help="Show what would happen without computing, exporting, or swapping.",
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help=(
+            "Report how many tickets need vectorizing (Stage 1) and how many "
+            "embedded tickets are missing from the local file (Stage 2), with a "
+            "measured time estimate. Makes no changes."
+        ),
+    )
+    parser.add_argument(
+        "--no-measure",
+        action="store_true",
+        help="With --status, skip the live sample embedding; estimate from constants only.",
+    )
+    parser.add_argument(
+        "--full-export",
+        action="store_true",
+        help=(
+            "Rebuild the WHOLE local file from the table instead of appending "
+            "only missing rows (recovery / first-time build)."
+        ),
+    )
     args = parser.parse_args()
+
+    # Status is a read-only report; do it and exit.
+    if args.status:
+        describe_pending(measure=not args.no_measure)
+        return
 
     print("=" * 70)
     print("  Ticket Embeddings Refresh Pipeline")
@@ -418,6 +779,7 @@ def main():
     print(f"  Skip compute:   {args.skip_compute}")
     print(f"  Limit:          {args.limit or 'None (all new tickets)'}")
     print(f"  Min row ratio:  {args.min_row_ratio}")
+    print(f"  Export mode:    {'FULL rebuild' if args.full_export else 'incremental append'}")
     print(f"  Dry run:        {args.dry_run}")
 
     if not args.skip_compute:
@@ -425,7 +787,12 @@ def main():
     else:
         print("\n  Skipping compute stage (--skip-compute).")
 
-    run_export_and_swap(min_row_ratio=args.min_row_ratio, dry_run=args.dry_run)
+    if args.full_export:
+        run_export_and_swap(min_row_ratio=args.min_row_ratio, dry_run=args.dry_run)
+    else:
+        run_incremental_export_and_swap(
+            min_row_ratio=args.min_row_ratio, dry_run=args.dry_run
+        )
 
     print(f"\n{'=' * 70}")
     print("  Refresh complete." if not args.dry_run else "  Dry run complete.")

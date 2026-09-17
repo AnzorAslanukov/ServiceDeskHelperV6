@@ -275,6 +275,10 @@ def main():
     # Step 4: Optionally update ticket embeddings (prompted).
     # Done BEFORE stop/start so the normal restart loads the new file.
     step(4, total_steps, "Updating ticket embeddings (optional)")
+    # Show how many tickets need vectorizing + a time estimate BEFORE asking,
+    # so the y/N decision is informed. Read-only; safe to skip on error.
+    info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
+    run_local("python -m exploration.refresh_ticket_embeddings --status")
     try:
         answer = input(
             f"  {Colors.YELLOW}Update ticket embeddings on the server? "

@@ -188,3 +188,136 @@ def test_atomic_swap_roundtrip_preserves_alignment(tmp_path):
     assert loaded.shape[0] == len(meta) == 6
     assert loaded.shape[1] == DIM
 
+
+
+# ── incremental helpers: parsing, metadata, estimates ────────────────────
+
+
+def test_parse_embedding_variants():
+    assert rte._parse_embedding([0.0] * DIM) == [0.0] * DIM
+    assert rte._parse_embedding(np.zeros(DIM)) == [0.0] * DIM
+    assert rte._parse_embedding(json.dumps([1.0] * DIM)) == [1.0] * DIM
+
+
+def test_parse_embedding_rejects_bad():
+    assert rte._parse_embedding([0.0] * 10) is None      # wrong dim
+    assert rte._parse_embedding("not json") is None       # unparseable
+    assert rte._parse_embedding(12345) is None            # wrong type
+
+
+def test_row_to_metadata_shape():
+    md = rte._row_to_metadata(
+        {"Id": "IR1", "Title": "t", "Description": "d",
+         "SupportGroup": "SD", "Location": "HUP", "extra": "ignored"}
+    )
+    assert md == {"Id": "IR1", "Title": "t", "Description": "d",
+                  "SupportGroup": "SD", "Location": "HUP"}
+
+
+def test_estimate_stage1_seconds_measured():
+    # 120 tickets @ 10/s + 3 batches * 0.5s delay = 12 + 1.5 = 13.5
+    assert rte.estimate_stage1_seconds(120, 10.0, 50, 0.5) == pytest.approx(13.5)
+
+
+def test_estimate_stage1_seconds_constants_fallback():
+    # rate=0 -> 3 batches * (2.0 + 0.5) = 7.5
+    assert rte.estimate_stage1_seconds(120, 0.0, 50, 0.5) == pytest.approx(7.5)
+
+
+def test_estimate_stage1_seconds_zero_is_none():
+    assert rte.estimate_stage1_seconds(0, 10.0, 50, 0.5) is None
+
+
+def test_format_duration_units():
+    assert rte._format_duration(30).endswith("s")
+    assert rte._format_duration(90).endswith("min")
+    assert rte._format_duration(7200).endswith("hr")
+
+
+# ── load_local_matrix_and_metadata ───────────────────────────────────────
+
+
+def test_load_local_missing_returns_empty(tmp_path):
+    matrix, meta, ids = rte.load_local_matrix_and_metadata(
+        tmp_path / rte.EMBEDDINGS_NAME, tmp_path / rte.METADATA_NAME
+    )
+    assert matrix is None and meta == [] and ids == set()
+
+
+def test_load_local_roundtrip(tmp_path):
+    emb = tmp_path / rte.EMBEDDINGS_NAME
+    meta_p = tmp_path / rte.METADATA_NAME
+    np.save(str(emb), _matrix(4))
+    meta_p.write_text(json.dumps(_metadata(4)), encoding="utf-8")
+
+    matrix, meta, ids = rte.load_local_matrix_and_metadata(emb, meta_p)
+    assert matrix.shape == (4, DIM)
+    assert len(meta) == 4
+    assert ids == {f"IR{1000 + i}" for i in range(4)}
+
+
+# ── fetch_ticket_rows_by_ids (fake connection) ───────────────────────────
+
+
+class _FakeCursor:
+    """Minimal cursor that serves rows for a WHERE Id IN (...) query."""
+
+    _COLS = ["Id", "Title", "Description", "SupportGroup", "Location", "embedding"]
+
+    def __init__(self, table_rows):
+        self._table = table_rows  # dict: Id -> row dict
+        self.description = [(c,) for c in self._COLS]
+        self._result = []
+
+    def execute(self, sql):
+        # Parse the quoted IDs out of the IN(...) clause for the test.
+        import re
+        ids = re.findall(r"'([^']+)'", sql.split("IN (", 1)[1]) if "IN (" in sql else list(self._table)
+        self._result = [self._table[i] for i in ids if i in self._table]
+
+    def fetchall(self):
+        return [[r[c] for c in self._COLS] for r in self._result]
+
+    def close(self):
+        pass
+
+
+class _FakeConnection:
+    def __init__(self, table_rows):
+        self._table = table_rows
+
+    def cursor(self):
+        return _FakeCursor(self._table)
+
+
+def test_fetch_ticket_rows_by_ids_returns_only_requested():
+    table = {
+        f"IR{i}": {
+            "Id": f"IR{i}", "Title": f"t{i}", "Description": "d",
+            "SupportGroup": "SD", "Location": "HUP",
+            "embedding": [float(i)] * DIM,
+        }
+        for i in range(5)
+    }
+    conn = _FakeConnection(table)
+
+    embs, meta = rte.fetch_ticket_rows_by_ids(conn, "tbl", ["IR1", "IR3"], chunk_size=10)
+
+    assert [m["Id"] for m in meta] == ["IR1", "IR3"]
+    assert len(embs) == 2 and len(embs[0]) == DIM
+
+
+def test_fetch_ticket_rows_by_ids_batches_and_skips_bad():
+    table = {
+        "IR1": {"Id": "IR1", "Title": "t", "Description": "d",
+                "SupportGroup": "SD", "Location": "HUP", "embedding": [1.0] * DIM},
+        "IR2": {"Id": "IR2", "Title": "t", "Description": "d",
+                "SupportGroup": "SD", "Location": "HUP", "embedding": [1.0] * 3},  # bad dim
+    }
+    conn = _FakeConnection(table)
+
+    embs, meta = rte.fetch_ticket_rows_by_ids(conn, "tbl", ["IR1", "IR2"], chunk_size=1)
+
+    assert [m["Id"] for m in meta] == ["IR1"]  # bad-dim row skipped
+    assert len(embs) == 1
+
