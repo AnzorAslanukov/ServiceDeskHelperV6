@@ -321,3 +321,47 @@ def test_fetch_ticket_rows_by_ids_batches_and_skips_bad():
     assert [m["Id"] for m in meta] == ["IR1"]  # bad-dim row skipped
     assert len(embs) == 1
 
+
+
+# ── in-place progress bar ────────────────────────────────────────────────
+
+
+def test_print_progress_uses_carriage_return_no_newline(capsys):
+    rte.print_progress(10, 100)
+    out = capsys.readouterr().out
+    assert out.startswith("\r")       # returns to start of line
+    assert "\n" not in out            # never advances a line mid-progress
+    assert "10/100" in out
+    assert "10%" in out
+
+
+def test_print_progress_reports_fraction_and_percent(capsys):
+    rte.print_progress(50, 200)
+    out = capsys.readouterr().out
+    assert "50/200" in out
+    assert "25%" in out
+
+
+def test_print_progress_clamps_and_guards_zero_total(capsys):
+    # done > total is clamped to total; total<=0 is guarded (no ZeroDivision).
+    rte.print_progress(150, 100)
+    rte.print_progress(5, 0)
+    out = capsys.readouterr().out
+    assert "100/100" in out
+    assert "100%" in out
+
+
+def test_finish_progress_emits_newline(capsys):
+    rte.finish_progress()
+    assert capsys.readouterr().out == "\n"
+
+
+def test_suppress_stdout_captures_and_restores(capsys):
+    with rte._SuppressStdout() as buf:
+        print("hidden line")
+    # The suppressed text is captured in the buffer, not shown to the user.
+    assert "hidden line" in buf.getvalue()
+    # After the context, stdout is restored (this print IS visible).
+    print("visible again")
+    assert "visible again" in capsys.readouterr().out
+

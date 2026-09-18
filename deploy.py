@@ -21,6 +21,13 @@ import subprocess
 import sys
 import time
 
+# Ensure the console can render this script's box-drawing/checkmark output
+# (═ ✓ ✗ →) on legacy Windows codepages (cp1252). Best-effort: never fatal.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
 # ── Configuration ──────────────────────────────────────────────────────
 SERVER = "AslanukA@10.192.46.182"
 PROJECT_DIR = r"C:\projects\service_desk_helper"
@@ -71,6 +78,42 @@ def error(msg):
 
 def info(msg):
     print(f"  {Colors.YELLOW}→ {msg}{Colors.RESET}")
+
+
+def prompt_yes_no(question, default=False):
+    """
+    Ask a clearly-delimited, flushed yes/no question and block for an answer.
+
+    - Prints the question on its own line, surrounded by blank lines, so it is
+      impossible to miss even after a wall of subprocess output.
+    - Flushes stdout BEFORE reading input (unflushed prompts are the classic
+      reason a question appears to be "skipped").
+    - Loops until the answer is a clear y/n (Enter alone takes the default).
+    - If stdin is not interactive (e.g. piped), returns the default and says so
+      instead of silently proceeding.
+    """
+    suffix = "[y/N]" if not default else "[Y/n]"
+    banner_line = "═" * 60
+    while True:
+        print(f"\n{Colors.YELLOW}{banner_line}{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.YELLOW}  {question}{Colors.RESET}")
+        # Write the actual input line and flush so it is visible before we block.
+        sys.stdout.write(f"{Colors.YELLOW}  Your choice {suffix}: {Colors.RESET}")
+        sys.stdout.flush()
+        try:
+            raw = input()
+        except (EOFError, OSError):
+            print(f"  {Colors.YELLOW}(no interactive input available — "
+                  f"defaulting to {'YES' if default else 'NO'}){Colors.RESET}")
+            return default
+        answer = raw.strip().lower()
+        if answer == "":
+            return default
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print(f"  {Colors.RED}Please answer 'y' or 'n'.{Colors.RESET}")
 
 
 def run_local(cmd, cwd=None):
@@ -279,14 +322,11 @@ def main():
     # so the y/N decision is informed. Read-only; safe to skip on error.
     info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
     run_local("python -m exploration.refresh_ticket_embeddings --status")
-    try:
-        answer = input(
-            f"  {Colors.YELLOW}Update ticket embeddings on the server? "
-            f"This rebuilds locally and transfers ~3 GB via SCP. [y/N]: {Colors.RESET}"
-        ).strip().lower()
-    except EOFError:
-        answer = "n"
-    if answer in ("y", "yes"):
+    answer = prompt_yes_no(
+        "Update ticket embeddings on the server? "
+        "This rebuilds locally and transfers ~3 GB via SCP."
+    )
+    if answer:
         try:
             if update_embeddings():
                 success("Ticket embeddings updated on server (loads on restart)")

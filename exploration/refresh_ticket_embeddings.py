@@ -44,6 +44,7 @@ Usage:
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import sys
@@ -52,6 +53,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+# Ensure stdout can render non-ASCII output (e.g. the "====" headers and any
+# ticket text) on legacy Windows consoles (cp1252). Best-effort: never fatal.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
 
 # Add project root to path (mirrors export_local_vectors.py)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -190,6 +198,60 @@ def atomic_swap_with_backup(temp_path: Path, live_path: Path) -> Path | None:
     return backup_path
 
 
+# ── In-place progress bar (carriage-return / single-line updater) ───────
+
+
+def print_progress(done: int, total: int, prefix: str = "  Progress", width: int = 30) -> None:
+    """
+    Render a single-line progress bar that overwrites itself in place using a
+    carriage return ('\\r') instead of printing a new line each update — e.g.
+
+        Progress |#########---------------------|  50/150 (33%)
+
+    ASCII-only glyphs are used so the bar renders on any console codepage
+    (Windows cp1252 cannot encode block characters like U+2588).
+
+    Call repeatedly with increasing ``done``; call ``finish_progress()`` once
+    when complete to move the cursor to the next line.
+    """
+    total = max(total, 1)
+    done = min(done, total)
+    filled = int(width * done / total)
+    bar = "#" * filled + "-" * (width - filled)
+    pct = int(100 * done / total)
+    # '\r' returns to column 0; end='' keeps us on the same line; the trailing
+    # spaces clear any leftover characters from a previous, longer render.
+    sys.stdout.write(f"\r{prefix} |{bar}| {done}/{total} ({pct}%)   ")
+    sys.stdout.flush()
+
+
+def finish_progress() -> None:
+    """Terminate an in-place progress bar by moving to the next line."""
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+class _SuppressStdout:
+    """
+    Context manager that swallows stdout writes. Used to silence the per-batch
+    print() calls inside populate_ticket_embeddings.process_batch so they don't
+    fragment the single-line progress bar. Anything written while active is
+    captured and returned so callers can surface errors if needed.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = io.StringIO()
+        self._real = None
+
+    def __enter__(self) -> "io.StringIO":
+        self._real = sys.stdout
+        sys.stdout = self._buffer
+        return self._buffer
+
+    def __exit__(self, *exc) -> None:
+        sys.stdout = self._real
+
+
 # ── Stage 1: incremental compute (delegates to populate_ticket_embeddings) ──
 
 
@@ -226,13 +288,34 @@ def run_compute(limit: int | None, dry_run: bool) -> None:
     print(f"  Embedding {total} new ticket(s) in {total_batches} batch(es)...")
 
     inserted = 0
+    processed = 0
+    # Show an in-place progress bar counting tickets vectorized (e.g. 10/100).
+    # process_batch() prints its own per-batch lines, which would fragment the
+    # single-line bar, so we capture its stdout and only surface real errors.
+    print_progress(0, total)
     for batch_num in range(1, total_batches + 1):
         start = (batch_num - 1) * batch_size
         batch = tickets[start:start + batch_size]
-        inserted += pte.process_batch(batch, batch_num, total_batches, dry_run=dry_run)
+
+        with _SuppressStdout() as captured:
+            inserted += pte.process_batch(batch, batch_num, total_batches, dry_run=dry_run)
+
+        processed += len(batch)
+        print_progress(processed, total)
+
+        # If the batch reported an error, break the bar and surface it.
+        batch_log = captured.getvalue()
+        if "ERROR" in batch_log or "FAILED" in batch_log:
+            finish_progress()
+            for line in batch_log.splitlines():
+                if "ERROR" in line or "FAILED" in line:
+                    print(f"  {line.strip()}")
+            print_progress(processed, total)
+
         if batch_num < total_batches:
             time.sleep(pte.DELAY_BETWEEN_BATCHES)
 
+    finish_progress()
     print(f"  Compute complete: {inserted}/{total} new ticket(s) embedded.")
 
 
