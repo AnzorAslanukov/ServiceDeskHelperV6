@@ -727,6 +727,13 @@ def estimate_stage1_seconds(count: int, rate: float, batch_size: int, delay: flo
     return n_batches * (2.0 + delay)
 
 
+def _scalar(cursor, sql: str) -> int:
+    """Run a COUNT(*)-style query and return the integer scalar."""
+    cursor.execute(sql)
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
 def describe_pending(measure: bool = True) -> dict:
     """
     Report, WITHOUT changing anything:
@@ -734,7 +741,11 @@ def describe_pending(measure: bool = True) -> dict:
       - embedded tickets missing from the local file (Stage 2 append backlog)
       - a time estimate for the Stage 1 embedding work
 
-    When ``measure`` is True, embeds one real sample batch to measure live
+    Counts are computed with cheap COUNT(*) queries (NOT by pulling 170K+ rows
+    into Python), so this stays fast. Each step prints as it goes so the caller
+    can see progress even while a cold Databricks warehouse is spinning up.
+
+    When ``measure`` is True, embeds one small real sample batch to measure live
     throughput; otherwise uses the code's known constants.
     """
     from exploration import populate_ticket_embeddings as pte
@@ -744,32 +755,65 @@ def describe_pending(measure: bool = True) -> dict:
     print("STATUS — how many tickets need vectorizing")
     print(f"{'=' * 60}")
 
-    # Stage 1 backlog: source tickets not yet embedded in the table.
-    embedded_ids = pte.get_already_embedded_ids()
-    source_tickets = pte.fetch_source_tickets(exclude_ids=embedded_ids)
-    stage1 = len(source_tickets)
-
-    # Stage 2 backlog: embedded-but-not-local.
-    _m, _meta, local_ids = load_local_matrix_and_metadata(
-        OUTPUT_DIR / EMBEDDINGS_NAME, OUTPUT_DIR / METADATA_NAME
-    )
+    print("  Connecting to Databricks (a cold warehouse may take a few minutes)...")
     connection = get_databricks_connection()
+    stage1 = 0
+    stage2 = 0
+    sample_texts: list[str] = []
     try:
-        table_ids = fetch_table_ids(connection, TICKET_TABLE)
+        cursor = connection.cursor()
+        try:
+            # Stage 1 — source tickets with text that are NOT yet in the table.
+            # Counted directly in SQL (anti-join) instead of transferring rows.
+            print("  Counting source tickets not yet embedded (Stage 1)...")
+            stage1 = _scalar(
+                cursor,
+                f"""
+                SELECT COUNT(*) FROM {pte.SOURCE_TABLE} s
+                WHERE (s.Title IS NOT NULL OR s.Description IS NOT NULL)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {TICKET_TABLE} t WHERE t.Id = s.Id
+                  )
+                """,
+            )
+            print(f"    -> {stage1:,} to embed.")
+
+            # Stage 2 — embedded-in-table but missing from the local file.
+            print("  Counting embedded tickets missing from local file (Stage 2)...")
+            _m, _meta, local_ids = load_local_matrix_and_metadata(
+                OUTPUT_DIR / EMBEDDINGS_NAME, OUTPUT_DIR / METADATA_NAME
+            )
+            table_ids = fetch_table_ids(connection, TICKET_TABLE)
+            stage2 = len(table_ids - local_ids)
+            print(f"    -> {stage2:,} to append locally.")
+
+            # Small sample for measured throughput (LIMIT, not full scan).
+            if stage1 > 0 and measure:
+                print("  Fetching a small sample for a throughput measurement...")
+                cursor.execute(
+                    f"""
+                    SELECT s.Title, s.Description FROM {pte.SOURCE_TABLE} s
+                    WHERE (s.Title IS NOT NULL OR s.Description IS NOT NULL)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM {TICKET_TABLE} t WHERE t.Id = s.Id
+                      )
+                    LIMIT {pte.EMBEDDING_BATCH_SIZE}
+                    """
+                )
+                for row in cursor.fetchall():
+                    text = pte.build_search_text(row[0], row[1])
+                    if text.strip():
+                        sample_texts.append(text)
+        finally:
+            cursor.close()
     finally:
         connection.close()
-    stage2 = len(table_ids - local_ids)
 
     # Throughput + estimate for Stage 1 (the expensive embedding work).
     rate = 0.0
-    if stage1 > 0 and measure:
-        sample = [
-            pte.build_search_text(t.get("Title"), t.get("Description"))
-            for t in source_tickets[:pte.EMBEDDING_BATCH_SIZE]
-        ]
-        sample = [s for s in sample if s.strip()]
-        print(f"  Measuring throughput on a sample of {len(sample)} ticket(s)...")
-        rate = measure_embedding_throughput(sample)
+    if sample_texts:
+        print(f"  Measuring throughput on a sample of {len(sample_texts)} ticket(s)...")
+        rate = measure_embedding_throughput(sample_texts)
 
     est_seconds = estimate_stage1_seconds(
         stage1, rate, pte.EMBEDDING_BATCH_SIZE, pte.DELAY_BETWEEN_BATCHES

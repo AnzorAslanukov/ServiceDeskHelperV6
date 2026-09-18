@@ -130,6 +130,30 @@ def run_local(cmd, cwd=None):
     return result.returncode == 0, output
 
 
+def run_local_streaming(cmd, cwd=None):
+    """
+    Run a command locally and STREAM its output line-by-line as it arrives.
+
+    Unlike run_local(), this does NOT buffer until the process exits — so a
+    long-running child (e.g. the --status check while a cold Databricks
+    warehouse spins up) shows live progress instead of looking frozen.
+    Returns True on success.
+    """
+    info(cmd)
+    proc = subprocess.Popen(
+        cmd, shell=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=cwd or os.path.dirname(os.path.abspath(__file__)),
+    )
+    try:
+        for line in proc.stdout:
+            print(f"    {line.rstrip()}")
+    finally:
+        proc.stdout.close()
+        proc.wait()
+    return proc.returncode == 0
+
+
 def ssh(command):
     """Run a command on the remote server via SSH."""
     full_cmd = f'ssh {SSH_OPTS} {SERVER} "{command}"'
@@ -321,7 +345,9 @@ def main():
     # Show how many tickets need vectorizing + a time estimate BEFORE asking,
     # so the y/N decision is informed. Read-only; safe to skip on error.
     info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
-    run_local("python -m exploration.refresh_ticket_embeddings --status")
+    info("A cold Databricks warehouse can take a few minutes to spin up — output streams below.")
+    # -u => unbuffered child stdout so the streamed lines appear immediately.
+    run_local_streaming("python -u -m exploration.refresh_ticket_embeddings --status")
     answer = prompt_yes_no(
         "Update ticket embeddings on the server? "
         "This rebuilds locally and transfers ~3 GB via SCP."
