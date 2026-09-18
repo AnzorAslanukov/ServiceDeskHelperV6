@@ -116,6 +116,72 @@ def prompt_yes_no(question, default=False):
         print(f"  {Colors.RED}Please answer 'y' or 'n'.{Colors.RESET}")
 
 
+def parse_limit_choice(raw):
+    """
+    Pure parser for the "how many NEW tickets to embed" prompt. Returns a
+    (kind, value) tuple so it is trivially unit-testable without any I/O:
+
+        ""  / "a" / "all"     -> ("all", None)     # process the whole backlog
+        a positive integer    -> ("limit", N)      # embed N, then finalize
+        "c" / "cancel"        -> ("cancel", None)  # skip the embeddings update
+        anything else,        -> ("invalid", None) # 0, negatives, non-numbers
+        including "0"/"-5"/"x"                        (caller should re-prompt)
+    """
+    answer = (raw or "").strip().lower()
+    if answer in ("", "a", "all"):
+        return ("all", None)
+    if answer in ("c", "cancel"):
+        return ("cancel", None)
+    try:
+        n = int(answer)
+    except ValueError:
+        return ("invalid", None)
+    if n <= 0:
+        return ("invalid", None)
+    return ("limit", n)
+
+
+def prompt_ticket_limit(max_tries=3):
+    """
+    Ask how many NEW tickets to embed this run and block for an answer.
+
+    Because the full backlog can take many hours, this lets the operator cap the
+    run to a specific number of tickets (which finalizes/exports/ships normally,
+    then stops) or process everything, or cancel the embeddings update entirely.
+
+    Returns a (kind, value) tuple:
+        ("all",    None) -> embed all new tickets
+        ("limit",  N)    -> embed at most N new tickets
+        ("cancel", None) -> skip the embeddings update
+
+    Re-prompts on invalid input (0, negatives, non-numbers). After ``max_tries``
+    invalid entries — or when stdin is not interactive — it defaults to CANCEL,
+    the safe choice (no long, unattended run kicked off by accident).
+    """
+    banner_line = "═" * 60
+    for _ in range(max_tries):
+        print(f"\n{Colors.YELLOW}{banner_line}{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.YELLOW}  How many NEW tickets to embed this run?{Colors.RESET}")
+        print(f"{Colors.YELLOW}    [A]      All new tickets (may take many hours){Colors.RESET}")
+        print(f"{Colors.YELLOW}    [number] Embed that many, then finalize (e.g. 5000){Colors.RESET}")
+        print(f"{Colors.YELLOW}    [C]      Cancel — skip the embeddings update{Colors.RESET}")
+        sys.stdout.write(f"{Colors.YELLOW}  Your choice [A/number/C]: {Colors.RESET}")
+        sys.stdout.flush()
+        try:
+            raw = input()
+        except (EOFError, OSError):
+            print(f"  {Colors.YELLOW}(no interactive input available — "
+                  f"defaulting to CANCEL){Colors.RESET}")
+            return ("cancel", None)
+        kind, value = parse_limit_choice(raw)
+        if kind != "invalid":
+            return (kind, value)
+        print(f"  {Colors.RED}Please enter 'A' for all, a positive whole number, "
+              f"or 'C' to cancel.{Colors.RESET}")
+    print(f"  {Colors.RED}Too many invalid entries — defaulting to CANCEL.{Colors.RESET}")
+    return ("cancel", None)
+
+
 def run_local(cmd, cwd=None):
     """Run a command locally and return (success, output)."""
     info(cmd)
@@ -233,11 +299,17 @@ def _local_manifest_sha():
         return None, None
 
 
-def update_embeddings():
+def update_embeddings(limit=None):
     """
     Rebuild the local ticket embeddings, then push them to the remote server
     (checksum-gated) and atomically swap them in — all BEFORE the server is
     restarted, so the normal deploy restart loads the new file.
+
+    When ``limit`` is a positive int, only that many NEW tickets are embedded in
+    the Databricks compute step this run (via ``--limit``); the export + SCP
+    transfer + swap then finalize normally on the partial result. Because the
+    compute step skips already-embedded tickets, subsequent runs resume the
+    remaining backlog. ``limit=None`` embeds the full backlog.
 
     Returns True if the remote embeddings were updated (and therefore a restart
     is needed to load them), False if skipped or unchanged.
@@ -251,8 +323,15 @@ def update_embeddings():
     #    Streamed with an unbuffered child (-u) so the in-place progress bar
     #    ("N/total") shows live during what can be a multi-hour embedding run.
     info("Rebuilding local ticket embeddings (incremental compute + export)...")
-    info("This can take a long time; a live progress bar will appear below.")
-    ok = run_local_streaming("python -u -m exploration.refresh_ticket_embeddings")
+    if limit:
+        info(f"Embedding at most {limit:,} new ticket(s) this run, then finalizing.")
+    else:
+        info("Embedding the FULL backlog; this can take a long time.")
+    info("A live progress bar (with periodic ETA heartbeats) will appear below.")
+    refresh_cmd = "python -u -m exploration.refresh_ticket_embeddings"
+    if limit:
+        refresh_cmd += f" --limit {int(limit)}"
+    ok = run_local_streaming(refresh_cmd)
     if not ok:
         error("Local embeddings refresh failed — skipping remote update.")
         return False
@@ -374,14 +453,24 @@ def main():
         "This rebuilds locally and transfers ~3 GB via SCP."
     )
     if answer:
-        try:
-            if update_embeddings():
-                success("Ticket embeddings updated on server (loads on restart)")
+        # Ask HOW MANY new tickets to embed this run — the full backlog can take
+        # many hours, so allow capping to a number (then finalize) or cancelling.
+        kind, limit = prompt_ticket_limit()
+        if kind == "cancel":
+            info("Skipping embeddings update (cancelled at scope prompt)")
+        else:
+            if kind == "limit":
+                info(f"Embedding scope: up to {limit:,} new ticket(s) this run.")
             else:
-                info("Embeddings not updated (skipped, unchanged, or failed above)")
-        except Exception as e:
-            error(f"Embeddings update raised: {e}")
-            errors.append("embeddings update")
+                info("Embedding scope: ALL new tickets.")
+            try:
+                if update_embeddings(limit=limit):
+                    success("Ticket embeddings updated on server (loads on restart)")
+                else:
+                    info("Embeddings not updated (skipped, unchanged, or failed above)")
+            except Exception as e:
+                error(f"Embeddings update raised: {e}")
+                errors.append("embeddings update")
     else:
         info("Skipping embeddings update (code-only deploy)")
 
