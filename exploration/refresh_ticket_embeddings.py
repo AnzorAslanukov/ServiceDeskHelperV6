@@ -231,6 +231,40 @@ def finish_progress() -> None:
     sys.stdout.flush()
 
 
+# Emit a heartbeat/ETA line roughly every this many seconds (rate-limited so
+# it doesn't spam short runs). Kept as a module constant for easy tuning/tests.
+HEARTBEAT_INTERVAL_SECONDS = 30.0
+
+
+def print_heartbeat(done: int, total: int, elapsed: float, prefix: str = "  [heartbeat]") -> None:
+    """
+    Print a standalone heartbeat line with elapsed time, rolling throughput,
+    and an ETA for the remaining work — e.g.
+
+        [heartbeat] 12,000/294,749 (4%) | elapsed 6.2 min | 32.1 tickets/sec | ETA ~2.4 hr
+
+    This is written as its OWN line (with a leading newline) so it does not get
+    overwritten by the in-place progress bar; the caller should redraw the bar
+    afterwards. ``elapsed`` is seconds since the run started; throughput/ETA are
+    derived from work completed so far, so they self-correct as the run goes.
+    """
+    total = max(total, 1)
+    done = max(done, 0)
+    pct = int(100 * min(done, total) / total)
+    rate = (done / elapsed) if elapsed > 0 and done > 0 else 0.0
+    remaining = max(total - done, 0)
+    eta_txt = "unknown"
+    if rate > 0:
+        eta_txt = f"~{_format_duration(remaining / rate)}"
+    rate_txt = f"{rate:.1f} tickets/sec" if rate > 0 else "measuring..."
+    # Leading '\n' ends the current in-place bar line cleanly before we print.
+    sys.stdout.write(
+        f"\n{prefix} {done:,}/{total:,} ({pct}%) | "
+        f"elapsed {_format_duration(elapsed)} | {rate_txt} | ETA {eta_txt}\n"
+    )
+    sys.stdout.flush()
+
+
 class _SuppressStdout:
     """
     Context manager that swallows stdout writes. Used to silence the per-batch
@@ -289,6 +323,11 @@ def run_compute(limit: int | None, dry_run: bool) -> None:
 
     inserted = 0
     processed = 0
+    # Timing for the periodic heartbeat/ETA line (see print_heartbeat). We emit
+    # a heartbeat at most once per HEARTBEAT_INTERVAL_SECONDS so short runs stay
+    # quiet while multi-hour runs get a rolling elapsed/rate/ETA readout.
+    run_start = time.monotonic()
+    last_heartbeat = run_start
     # Show an in-place progress bar counting tickets vectorized (e.g. 10/100).
     # process_batch() prints its own per-batch lines, which would fragment the
     # single-line bar, so we capture its stdout and only surface real errors.
@@ -312,10 +351,21 @@ def run_compute(limit: int | None, dry_run: bool) -> None:
                     print(f"  {line.strip()}")
             print_progress(processed, total)
 
+        # Periodic heartbeat: prints elapsed/rate/ETA on its own line, then
+        # redraws the bar. Skipped on the final batch (finish line follows).
+        now = time.monotonic()
+        if (batch_num < total_batches
+                and now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS):
+            print_heartbeat(processed, total, now - run_start)
+            print_progress(processed, total)
+            last_heartbeat = now
+
         if batch_num < total_batches:
             time.sleep(pte.DELAY_BETWEEN_BATCHES)
 
     finish_progress()
+    total_elapsed = time.monotonic() - run_start
+    print(f"  Total embedding time: {_format_duration(total_elapsed)}")
     print(f"  Compute complete: {inserted}/{total} new ticket(s) embedded.")
 
 

@@ -356,6 +356,32 @@ def test_finish_progress_emits_newline(capsys):
     assert capsys.readouterr().out == "\n"
 
 
+def test_print_heartbeat_reports_elapsed_rate_and_eta(capsys):
+    # 100 done in 10s -> 10 tickets/sec; 900 remaining -> ETA 90s.
+    rte.print_heartbeat(100, 1000, 10.0)
+    out = capsys.readouterr().out
+    assert out.startswith("\n")          # own line: does not clobber the bar
+    assert out.endswith("\n")            # and terminates its own line
+    assert "100/1,000" in out            # thousands-separated counts
+    assert "10%" in out
+    assert "10.0 tickets/sec" in out
+    assert "ETA" in out
+    assert "elapsed" in out
+
+
+def test_print_heartbeat_handles_zero_elapsed_and_zero_done(capsys):
+    # No division-by-zero; rate/ETA degrade gracefully before any progress.
+    rte.print_heartbeat(0, 1000, 0.0)
+    out = capsys.readouterr().out
+    assert "0/1,000" in out
+    assert "measuring..." in out
+    assert "ETA unknown" in out
+
+
+def test_heartbeat_interval_constant_is_positive():
+    assert rte.HEARTBEAT_INTERVAL_SECONDS > 0
+
+
 def test_suppress_stdout_captures_and_restores(capsys):
     with rte._SuppressStdout() as buf:
         print("hidden line")

@@ -132,25 +132,43 @@ def run_local(cmd, cwd=None):
 
 def run_local_streaming(cmd, cwd=None):
     """
-    Run a command locally and STREAM its output line-by-line as it arrives.
+    Run a command locally and STREAM its output as it arrives, passing bytes
+    through RAW so in-place progress bars (carriage-return '\\r' updates) render
+    live instead of being withheld until the next newline.
 
     Unlike run_local(), this does NOT buffer until the process exits — so a
     long-running child (e.g. the --status check while a cold Databricks
-    warehouse spins up) shows live progress instead of looking frozen.
-    Returns True on success.
+    warehouse spins up, or the multi-hour embedding rebuild with its progress
+    bar) shows live progress instead of looking frozen. Returns True on success.
     """
     info(cmd)
+    import codecs
+    # Binary stdout so we can forward '\r' and partial lines immediately.
     proc = subprocess.Popen(
-        cmd, shell=True, text=True,
+        cmd, shell=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         cwd=cwd or os.path.dirname(os.path.abspath(__file__)),
     )
+    # Incremental decoder so multi-byte UTF-8 chars aren't split across reads.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     try:
-        for line in proc.stdout:
-            print(f"    {line.rstrip()}")
+        while True:
+            chunk = proc.stdout.read(64)
+            if not chunk:
+                break
+            text = decoder.decode(chunk)
+            if text:
+                sys.stdout.write(text)
+                sys.stdout.flush()
     finally:
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            sys.stdout.write(tail)
         proc.stdout.close()
         proc.wait()
+    # Ensure the shell prompt / next log line starts cleanly after any bar.
+    sys.stdout.write("\n")
+    sys.stdout.flush()
     return proc.returncode == 0
 
 
@@ -230,8 +248,11 @@ def update_embeddings():
     local_manifest = os.path.join(project_root, VECTORS_SUBDIR, MANIFEST_NAME)
 
     # 1. Rebuild locally (incremental compute + export + atomic local swap).
+    #    Streamed with an unbuffered child (-u) so the in-place progress bar
+    #    ("N/total") shows live during what can be a multi-hour embedding run.
     info("Rebuilding local ticket embeddings (incremental compute + export)...")
-    ok, _ = run_local("python -m exploration.refresh_ticket_embeddings")
+    info("This can take a long time; a live progress bar will appear below.")
+    ok = run_local_streaming("python -u -m exploration.refresh_ticket_embeddings")
     if not ok:
         error("Local embeddings refresh failed — skipping remote update.")
         return False
