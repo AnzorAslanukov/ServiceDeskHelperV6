@@ -9,11 +9,17 @@ Steps performed:
   2. SSH to workstation → git pull
   3. Install any new dependencies
   4. (Optional) Update ticket embeddings on the server — prompted; the ~3.1 GB
-     file is rebuilt locally and transferred via SCP (never GitHub), then
-     atomically swapped in BEFORE the restart so the new file is loaded.
+     file is rebuilt locally and TRANSFERRED via SCP (never GitHub) to *.tmp
+     paths. A live transfer progress bar is shown. The atomic swap is DEFERRED
+     to step 6 (after the server is stopped) — see note below.
   5. Stop the running server
-  6. Start the server (detached)
-  7. Verify the server is responding
+  6. Apply the transferred embeddings: atomically swap the *.tmp files into
+     place. This happens WHILE THE SERVER IS DOWN on purpose: the running
+     server mmaps ticket_embeddings.npy, and Windows refuses to rename a
+     memory-mapped file (WinError 32). Swapping after the stop removes that
+     lock so the swap succeeds; the next start then loads the new file.
+  7. Start the server (detached)
+  8. Verify the server is responding
 """
 
 import os
@@ -284,6 +290,153 @@ def _file_size_mb(path):
         return 0.0
 
 
+def _fmt_bytes(num):
+    """Human-readable size (e.g. '3.4 GB', '367.5 MB'). Robust to None/0."""
+    n = float(num or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _fmt_eta(seconds):
+    """Format an ETA in seconds as M:SS (or H:MM:SS for long transfers)."""
+    if seconds is None or seconds < 0:
+        return "--:--"
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _remote_file_size(remote_rel_path):
+    """
+    Return the size in bytes of a file under PROJECT_DIR on the server, or None.
+
+    Used to drive the SCP transfer progress bar by polling how many bytes have
+    landed on the remote so far. Best-effort and quiet: any failure (file not
+    yet created, transient SSH error) simply returns None so the caller skips
+    that tick instead of breaking the transfer.
+    """
+    remote_abs = f"{PROJECT_DIR}\\{remote_rel_path}"
+    cmd = (
+        f"if (Test-Path '{remote_abs}') "
+        f"{{ (Get-Item '{remote_abs}').Length }} else {{ '' }}"
+    )
+    full_cmd = f'ssh {SSH_OPTS} {SERVER} "{cmd}"'
+    try:
+        result = subprocess.run(
+            full_cmd, shell=True, capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    out = (result.stdout or "").strip()
+    for token in out.split():
+        if token.isdigit():
+            return int(token)
+    return None
+
+
+def scp_streaming(local_path, remote_rel_path, poll_interval=4.0):
+    """
+    SCP a (large) file to the server while showing a live progress bar driven by
+    polling the REMOTE file size — so it works on any OpenSSH/scp build,
+    regardless of whether scp's own '\\r' progress meter reaches us through the
+    pipe.
+
+    A background thread polls the remote ``*.tmp`` size every ``poll_interval``
+    seconds and redraws an in-place bar:
+
+        ticket_embeddings.npy |####------| 42%  1.4/3.4 GB  22.1 MB/s  ETA 1:38
+
+    Percent/ETA are computed against the known LOCAL file size. All polling is
+    wrapped in best-effort guards: a failed size probe just skips that tick and
+    never aborts the transfer. Returns (success, output) like scp().
+    """
+    import threading
+
+    remote_abs = f"{PROJECT_DIR}\\{remote_rel_path}"
+    full_cmd = f'scp {SSH_OPTS} "{local_path}" {SERVER}:"{remote_abs}"'
+    total_bytes = int(_file_size_mb(local_path) * 1024 * 1024)
+    name = os.path.basename(local_path)
+    info(f"scp → {name} ({_fmt_bytes(total_bytes)})")
+
+    # scp's own output is captured (hidden) so it can't fight our bar for the
+    # terminal; our polled bar is the visible progress indicator.
+    proc = subprocess.Popen(
+        full_cmd, shell=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+
+    stop = threading.Event()
+    start = time.time()
+    bar_width = 30
+
+    def _draw():
+        last_seen, last_time = 0, start
+        rate = 0.0
+        while not stop.is_set():
+            sent = _remote_file_size(remote_rel_path)
+            now = time.time()
+            if sent is not None:
+                elapsed = now - last_time
+                if elapsed > 0 and sent >= last_seen:
+                    inst = (sent - last_seen) / elapsed
+                    # Smooth the rate a little so the ETA doesn't jitter wildly.
+                    rate = inst if rate == 0 else (0.6 * rate + 0.4 * inst)
+                last_seen, last_time = sent, now
+                if total_bytes > 0:
+                    frac = min(sent / total_bytes, 1.0)
+                    filled = int(bar_width * frac)
+                    bar = "#" * filled + "-" * (bar_width - filled)
+                    eta = ((total_bytes - sent) / rate) if rate > 0 else None
+                    sys.stdout.write(
+                        f"\r    {name} |{bar}| {frac * 100:4.0f}%  "
+                        f"{_fmt_bytes(sent)}/{_fmt_bytes(total_bytes)}  "
+                        f"{_fmt_bytes(rate)}/s  ETA {_fmt_eta(eta)}   "
+                    )
+                    sys.stdout.flush()
+            stop.wait(poll_interval)
+
+    drawer = threading.Thread(target=_draw, daemon=True)
+    drawer.start()
+
+    # Drain scp's (hidden) output so the pipe never blocks the child.
+    try:
+        captured = proc.stdout.read()
+    finally:
+        proc.stdout.close()
+        proc.wait()
+        stop.set()
+        drawer.join(timeout=2)
+
+    # Final line: show 100% on success, then a clean newline for the next log.
+    if proc.returncode == 0 and total_bytes > 0:
+        bar = "#" * bar_width
+        sys.stdout.write(
+            f"\r    {name} |{bar}| 100%  "
+            f"{_fmt_bytes(total_bytes)}/{_fmt_bytes(total_bytes)}   \n"
+        )
+    else:
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+
+    output = ""
+    if captured:
+        try:
+            output = captured.decode("utf-8", errors="replace").strip()
+        except (UnicodeDecodeError, AttributeError):
+            output = ""
+        if output:
+            for line in output.split("\n"):
+                if "NativeCommandError" not in line and "CategoryInfo" not in line:
+                    print(f"    {line}")
+    return proc.returncode == 0, output
+
+
 def _local_manifest_sha():
     """Return the local manifest's (sha256_npy, sha256_meta), or (None, None)."""
     import json
@@ -299,20 +452,30 @@ def _local_manifest_sha():
         return None, None
 
 
-def update_embeddings(limit=None):
+def stage_embeddings(limit=None):
     """
-    Rebuild the local ticket embeddings, then push them to the remote server
-    (checksum-gated) and atomically swap them in — all BEFORE the server is
-    restarted, so the normal deploy restart loads the new file.
+    Rebuild the local ticket embeddings and TRANSFER them to the server as
+    ``*.tmp`` files (checksum-gated). It deliberately does NOT perform the
+    atomic swap — that is deferred to ``apply_embeddings()``, which the deploy
+    flow runs AFTER the server is stopped (step 6).
+
+    Why defer the swap? On Windows the running server memory-maps
+    ``ticket_embeddings.npy``, and a mapped file cannot be renamed/replaced
+    (WinError 32). Swapping before the stop therefore fails every time; swapping
+    after the stop succeeds. See the module docstring.
 
     When ``limit`` is a positive int, only that many NEW tickets are embedded in
     the Databricks compute step this run (via ``--limit``); the export + SCP
-    transfer + swap then finalize normally on the partial result. Because the
-    compute step skips already-embedded tickets, subsequent runs resume the
-    remaining backlog. ``limit=None`` embeds the full backlog.
+    transfer finalize normally on the partial result. Because the compute step
+    skips already-embedded tickets, subsequent runs resume the remaining
+    backlog. ``limit=None`` embeds the full backlog.
 
-    Returns True if the remote embeddings were updated (and therefore a restart
-    is needed to load them), False if skipped or unchanged.
+    Returns one of:
+        "swap" — new (or stranded) temp files are staged and a swap is pending.
+        "skip" — nothing to do (remote already up to date, or refresh failed in
+                 a way that leaves live files correctly unchanged).
+        "fail" — a hard error occurred (refresh crashed, files missing, or the
+                 SCP transfer failed); no swap should be attempted.
     """
     project_root = os.path.dirname(os.path.abspath(__file__))
     local_emb = os.path.join(project_root, VECTORS_SUBDIR, EMBEDDINGS_NAME)
@@ -334,10 +497,10 @@ def update_embeddings(limit=None):
     ok = run_local_streaming(refresh_cmd)
     if not ok:
         error("Local embeddings refresh failed — skipping remote update.")
-        return False
+        return "fail"
     if not (os.path.exists(local_emb) and os.path.exists(local_meta)):
         error("Local embedding files missing after refresh — skipping remote update.")
-        return False
+        return "fail"
     success("Local embeddings rebuilt")
 
     # 2. Checksum-gate: skip the ~3 GB transfer if the remote already matches.
@@ -362,26 +525,41 @@ def update_embeddings(limit=None):
             live_ok = _remote_live_matches_manifest()
             if live_ok:
                 success("Remote embeddings already match local checksum — no transfer needed.")
-                return False
+                return "skip"
             info("Remote manifest matches, but live files are stale "
-                 "(a previous swap did not complete) — re-applying.")
-            # Skip the big re-transfer if the temp files are still present and
-            # valid on the server; just re-run the swap. Otherwise fall through
-            # to a normal transfer + swap below.
+                 "(a previous swap did not complete) — will re-apply after stop.")
+            # Skip the big re-transfer if the temp files are still present on the
+            # server; the deferred swap (step 6) will reuse them. Otherwise fall
+            # through to a normal transfer below.
             if _remote_temp_files_present():
                 info("Reusing already-transferred temp files on the server.")
-                return _remote_validate_and_swap()
+                return "swap"
 
-    # 3. SCP both files (+ manifest) to remote TEMP paths.
+    # 3. SCP both files (+ manifest) to remote TEMP paths. The two big files use
+    #    scp_streaming() so a live transfer progress bar is shown; the tiny
+    #    manifest uses plain scp() (no bar needed for a few KB).
     info(f"Transferring embeddings to {SERVER} (this can take a while)...")
-    ok_emb, _ = scp(local_emb, f"{VECTORS_SUBDIR}\\{EMBEDDINGS_NAME}.tmp")
-    ok_meta, _ = scp(local_meta, f"{VECTORS_SUBDIR}\\{METADATA_NAME}.tmp")
+    ok_emb, _ = scp_streaming(local_emb, f"{VECTORS_SUBDIR}\\{EMBEDDINGS_NAME}.tmp")
+    ok_meta, _ = scp_streaming(local_meta, f"{VECTORS_SUBDIR}\\{METADATA_NAME}.tmp")
     if not (ok_emb and ok_meta):
         error("SCP transfer failed — remote embeddings left unchanged.")
-        return False
+        return "fail"
     if os.path.exists(local_manifest):
         scp(local_manifest, f"{VECTORS_SUBDIR}\\{MANIFEST_NAME}")
     success("Embeddings transferred to remote temp files")
+
+    # Transfer done; the atomic swap is deferred to apply_embeddings() (step 6).
+    return "swap"
+
+
+def apply_embeddings():
+    """
+    Perform the deferred atomic swap of the transferred ``*.tmp`` embedding
+    files into the live location. Call this ONLY after the server is stopped so
+    the live ``.npy`` is no longer memory-mapped (otherwise Windows raises
+    WinError 32 and the swap fails). Returns True on SWAP_OK.
+    """
+    return _remote_validate_and_swap()
 
     # 4. Remote validate + atomic swap (keep .bak). This runs a real repo script
     #    (scripts/swap_embeddings.py) that asserts the .npy row count == metadata
@@ -454,8 +632,12 @@ def main():
     os.system("")
 
     banner()
-    total_steps = 7
+    total_steps = 8
     errors = []
+    # Whether stage_embeddings() left *.tmp files that still need to be swapped
+    # into place. The swap itself is deferred to step 6 (after the server stop)
+    # because Windows can't replace the memory-mapped .npy while the server runs.
+    swap_pending = False
 
     # Pre-flight: fix git safe.directory (needed when double-clicked from Explorer)
     project_dir = os.path.dirname(os.path.abspath(__file__)).replace("\\", "/")
@@ -497,7 +679,9 @@ def main():
     success("Dependencies up to date")
 
     # Step 4: Optionally update ticket embeddings (prompted).
-    # Done BEFORE stop/start so the normal restart loads the new file.
+    # This only REBUILDS + TRANSFERS the files (to *.tmp). The atomic swap is
+    # deferred to step 6 (after the server is stopped) so Windows will let us
+    # replace the no-longer-mmapped live .npy.
     step(4, total_steps, "Updating ticket embeddings (optional)")
     # Show how many tickets need vectorizing + a time estimate BEFORE asking,
     # so the y/N decision is informed. Read-only; safe to skip on error.
@@ -521,10 +705,15 @@ def main():
             else:
                 info("Embedding scope: ALL new tickets.")
             try:
-                if update_embeddings(limit=limit):
-                    success("Ticket embeddings updated on server (loads on restart)")
-                else:
-                    info("Embeddings not updated (skipped, unchanged, or failed above)")
+                result = stage_embeddings(limit=limit)
+                if result == "swap":
+                    swap_pending = True
+                    success("Embeddings staged on server — will apply after stop")
+                elif result == "skip":
+                    info("Embeddings not updated (remote already up to date)")
+                else:  # "fail"
+                    error("Embeddings staging failed — see messages above")
+                    errors.append("embeddings staging")
             except Exception as e:
                 error(f"Embeddings update raised: {e}")
                 errors.append("embeddings update")
@@ -537,8 +726,26 @@ def main():
     success("Server stopped")
     time.sleep(2)
 
-    # Step 6: Start server via background SSH session (only reliable method)
-    step(6, total_steps, "Starting server (background SSH session)")
+    # Step 6: Apply staged embeddings (atomic swap) — WHILE THE SERVER IS DOWN.
+    # The live .npy is no longer memory-mapped now, so os.replace can rename it
+    # (this is the fix for the WinError 32 "file in use" swap failure that
+    # happened when the swap ran before the stop).
+    step(6, total_steps, "Applying new embeddings (atomic swap)")
+    if swap_pending:
+        try:
+            if apply_embeddings():
+                success("Embeddings swapped into place (loads on start)")
+            else:
+                error("Embeddings swap failed — live files left unchanged")
+                errors.append("embeddings swap")
+        except Exception as e:
+            error(f"Embeddings swap raised: {e}")
+            errors.append("embeddings swap")
+    else:
+        info("No embeddings to apply (skipped, unchanged, or staging failed)")
+
+    # Step 7: Start server via background SSH session (only reliable method)
+    step(7, total_steps, "Starting server (background SSH session)")
     start_cmd = (
         f'start /b ssh {SSH_OPTS} {SERVER} '
         f'"Set-Location \'{PROJECT_DIR}\'; python -m uvicorn src.main:app --host 0.0.0.0 --port 8000" '
@@ -548,8 +755,8 @@ def main():
     subprocess.Popen(start_cmd, shell=True)
     success("Server starting in background SSH session")
 
-    # Step 7: Verify
-    step(7, total_steps, "Verifying server is responding")
+    # Step 8: Verify
+    step(8, total_steps, "Verifying server is responding")
     info("Waiting for server to start...")
     time.sleep(8)
 
