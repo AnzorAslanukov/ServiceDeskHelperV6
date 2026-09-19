@@ -341,6 +341,12 @@ def update_embeddings(limit=None):
     success("Local embeddings rebuilt")
 
     # 2. Checksum-gate: skip the ~3 GB transfer if the remote already matches.
+    #    We ONLY skip when (a) the remote manifest matches the local checksum AND
+    #    (b) the remote LIVE .npy actually has the manifest's row count. Condition
+    #    (b) guards the case where a previous deploy transferred the files and
+    #    updated the manifest, but the atomic swap failed — leaving the live files
+    #    stale and the new data stranded in *.tmp. Without (b) the manifest would
+    #    "match" and we'd skip forever, never applying the already-transferred data.
     local_npy_sha, local_meta_sha = _local_manifest_sha()
     if local_npy_sha:
         remote_manifest_rel = f"{VECTORS_SUBDIR}\\{MANIFEST_NAME}"
@@ -348,9 +354,23 @@ def update_embeddings(limit=None):
             f"if (Test-Path '{PROJECT_DIR}\\{remote_manifest_rel}') "
             f"{{ Get-Content '{PROJECT_DIR}\\{remote_manifest_rel}' -Raw }}"
         )
-        if ok and local_npy_sha in remote_out and (local_meta_sha or "") in remote_out:
-            success("Remote embeddings already match local checksum — no transfer needed.")
-            return False
+        manifest_matches = (
+            ok and local_npy_sha in remote_out and (local_meta_sha or "") in remote_out
+        )
+        if manifest_matches:
+            # Confirm the LIVE file is really swapped in (row count matches manifest).
+            live_ok = _remote_live_matches_manifest()
+            if live_ok:
+                success("Remote embeddings already match local checksum — no transfer needed.")
+                return False
+            info("Remote manifest matches, but live files are stale "
+                 "(a previous swap did not complete) — re-applying.")
+            # Skip the big re-transfer if the temp files are still present and
+            # valid on the server; just re-run the swap. Otherwise fall through
+            # to a normal transfer + swap below.
+            if _remote_temp_files_present():
+                info("Reusing already-transferred temp files on the server.")
+                return _remote_validate_and_swap()
 
     # 3. SCP both files (+ manifest) to remote TEMP paths.
     info(f"Transferring embeddings to {SERVER} (this can take a while)...")
@@ -363,31 +383,68 @@ def update_embeddings(limit=None):
         scp(local_manifest, f"{VECTORS_SUBDIR}\\{MANIFEST_NAME}")
     success("Embeddings transferred to remote temp files")
 
-    # 4. Remote validate + atomic swap (keep .bak). Runs a small Python snippet
-    #    on the server that asserts the .npy row count == metadata length before
-    #    replacing the live files.
+    # 4. Remote validate + atomic swap (keep .bak). This runs a real repo script
+    #    (scripts/swap_embeddings.py) that asserts the .npy row count == metadata
+    #    length before replacing the live files. The script ships to the server
+    #    via the git sync in Step 2, so it is guaranteed present here.
+    #
+    #    IMPORTANT: do NOT inline this as `python -c "..."`. ssh() wraps the whole
+    #    remote command in double quotes, so an inner `-c "..."` closes them early
+    #    and the remote PowerShell tries to parse the Python source (that was the
+    #    "Missing argument in parameter list" swap failure). Passing the vectors
+    #    dir as a single-quoted PowerShell argument keeps everything quote-safe.
+    return _remote_validate_and_swap()
+
+
+def _remote_validate_and_swap():
+    """
+    Run scripts/swap_embeddings.py on the server to validate the transferred
+    *.tmp files and atomically swap them into place. Returns True on SWAP_OK.
+
+    Quote-safety note: ssh() wraps the whole remote command in double quotes, so
+    the vectors dir is passed as a SINGLE-quoted PowerShell argument (no inner
+    double quotes) — this is what fixed the earlier "Missing argument in
+    parameter list" PowerShell parse failure.
+    """
     vdir = f"{PROJECT_DIR}\\{VECTORS_SUBDIR}"
-    py = (
-        "import os,json,numpy as np;"
-        f"d=r'{vdir}';"
-        "e=os.path.join(d,'ticket_embeddings.npy');m=os.path.join(d,'ticket_metadata.json');"
-        "et=e+'.tmp';mt=m+'.tmp';"
-        "a=np.load(et,mmap_mode='r');"
-        "meta=json.load(open(mt,encoding='utf-8'));"
-        "assert a.shape[0]==len(meta),'row/meta mismatch';"
-        "assert a.shape[1]==1024,'bad dims';"
-        "os.replace(m,m+'.bak') if os.path.exists(m) else None;"
-        "os.replace(e,e+'.bak') if os.path.exists(e) else None;"
-        "os.replace(mt,m);os.replace(et,e);"
-        "print('SWAP_OK rows='+str(a.shape[0]))"
+    ok, out = ssh(
+        f"Set-Location '{PROJECT_DIR}'; "
+        f"python scripts\\swap_embeddings.py '{vdir}'"
     )
-    ok, out = ssh(f'Set-Location \'{PROJECT_DIR}\'; python -c "{py}"')
     if ok and "SWAP_OK" in out:
         success("Remote embeddings validated and swapped into place")
         return True
 
     error("Remote validation/swap failed — live files left unchanged (temp files remain).")
     return False
+
+
+def _remote_temp_files_present():
+    """True if BOTH transferred *.tmp embedding files exist on the server."""
+    e = f"{PROJECT_DIR}\\{VECTORS_SUBDIR}\\{EMBEDDINGS_NAME}.tmp"
+    m = f"{PROJECT_DIR}\\{VECTORS_SUBDIR}\\{METADATA_NAME}.tmp"
+    ok, out = ssh(
+        f"if ((Test-Path '{e}') -and (Test-Path '{m}')) "
+        f"{{ 'TMP_PRESENT' }} else {{ 'TMP_MISSING' }}"
+    )
+    return ok and "TMP_PRESENT" in out
+
+
+def _remote_live_matches_manifest():
+    """
+    True if the remote LIVE .npy row count equals the remote manifest's ``rows``.
+
+    Used to detect a stranded state where the manifest was updated but the atomic
+    swap did not complete, so the live files are still stale. Runs a tiny repo
+    script over SSH (quote-safe, single-quoted arg — no inline python -c).
+    """
+    vdir = f"{PROJECT_DIR}\\{VECTORS_SUBDIR}"
+    ok, out = ssh(
+        f"Set-Location '{PROJECT_DIR}'; "
+        f"python scripts\\check_live_matches_manifest.py '{vdir}'"
+    )
+    # Conservative: only treat an explicit LIVE_MATCH as "already applied".
+    return ok and "LIVE_MATCH" in out
 
 
 # ── Main Deploy Flow ───────────────────────────────────────────────────
