@@ -301,8 +301,16 @@ def _fmt_bytes(num):
 
 
 def _fmt_eta(seconds):
-    """Format an ETA in seconds as M:SS (or H:MM:SS for long transfers)."""
-    if seconds is None or seconds < 0:
+    """
+    Format an ETA in seconds as M:SS (or H:MM:SS for long transfers).
+
+    Returns "--:--" when the ETA is unknown (None), negative, or implausibly
+    large. The upper clamp (>= 100 hours) guards against the degenerate case
+    where a decaying transfer rate approaches zero and (residual / rate) blows
+    up to an astronomically large number — which previously printed a many-digit
+    hour count and made a healthy transfer look broken.
+    """
+    if seconds is None or seconds < 0 or seconds >= 100 * 3600:
         return "--:--"
     seconds = int(seconds)
     h, rem = divmod(seconds, 3600)
@@ -375,30 +383,59 @@ def scp_streaming(local_path, remote_rel_path, poll_interval=4.0):
     start = time.time()
     bar_width = 30
 
+    # Rates below this floor are treated as "unknown" for ETA purposes. Once a
+    # transfer's tail stalls (bytes all sent, remote size static) the smoothed
+    # rate decays toward — but never reaches — zero; without a floor, the ETA
+    # (residual / rate) explodes. This keeps the ETA honest ("--:--") instead.
+    min_rate = 1024.0  # 1 KB/s
+    # Once the remote size reaches the full local size, the data is on the
+    # server and scp is just finalizing (close/rename/fsync + final ACK). We
+    # switch to a static "finalizing" line rather than recomputing a bogus ETA.
+    done_bar = "#" * bar_width
+
     def _draw():
         last_seen, last_time = 0, start
         rate = 0.0
+        last_frame = None          # only redraw when the visible text changes
+        finalizing_shown = False
         while not stop.is_set():
             sent = _remote_file_size(remote_rel_path)
             now = time.time()
-            if sent is not None:
+            if sent is not None and total_bytes > 0:
                 elapsed = now - last_time
                 if elapsed > 0 and sent >= last_seen:
                     inst = (sent - last_seen) / elapsed
                     # Smooth the rate a little so the ETA doesn't jitter wildly.
                     rate = inst if rate == 0 else (0.6 * rate + 0.4 * inst)
                 last_seen, last_time = sent, now
-                if total_bytes > 0:
+
+                if sent >= total_bytes:
+                    # Fully transferred; scp is finalizing. Show a stable line
+                    # once, then stop redrawing so the tail can't flood output.
+                    if not finalizing_shown:
+                        sys.stdout.write(
+                            f"\r    {name} |{done_bar}| 100%  "
+                            f"{_fmt_bytes(total_bytes)}/{_fmt_bytes(total_bytes)}  "
+                            f"finalizing...   "
+                        )
+                        sys.stdout.flush()
+                        finalizing_shown = True
+                else:
                     frac = min(sent / total_bytes, 1.0)
                     filled = int(bar_width * frac)
                     bar = "#" * filled + "-" * (bar_width - filled)
-                    eta = ((total_bytes - sent) / rate) if rate > 0 else None
-                    sys.stdout.write(
+                    # Only produce an ETA when the rate is meaningful; a
+                    # sub-floor rate is reported as unknown ("--:--").
+                    eta = ((total_bytes - sent) / rate) if rate >= min_rate else None
+                    frame = (
                         f"\r    {name} |{bar}| {frac * 100:4.0f}%  "
                         f"{_fmt_bytes(sent)}/{_fmt_bytes(total_bytes)}  "
                         f"{_fmt_bytes(rate)}/s  ETA {_fmt_eta(eta)}   "
                     )
-                    sys.stdout.flush()
+                    if frame != last_frame:      # skip identical redraws
+                        sys.stdout.write(frame)
+                        sys.stdout.flush()
+                        last_frame = frame
             stop.wait(poll_interval)
 
     drawer = threading.Thread(target=_draw, daemon=True)

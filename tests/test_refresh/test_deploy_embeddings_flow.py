@@ -45,6 +45,9 @@ def test_fmt_bytes(num, expected):
         (9, "0:09"),
         (65, "1:05"),
         (3661, "1:01:01"),
+        (99 * 3600, "99:00:00"),                 # just under the clamp: still shown
+        (100 * 3600, "--:--"),                   # at the clamp: treated as unknown
+        (50552625048050902414750782, "--:--"),   # runaway ETA from the stuck log
     ],
 )
 def test_fmt_eta(seconds, expected):
