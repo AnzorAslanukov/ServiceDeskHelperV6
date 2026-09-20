@@ -11,11 +11,17 @@ Provides four search modes:
 import asyncio
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.clients.athena_client import AthenaClient
 from src.clients.databricks_client import DatabricksClient
+
+# UPHS / Penn Medicine operates in the US Eastern timezone. Athena returns
+# timestamps in UTC, so search results are converted to this zone for display
+# (handles EST/EDT transitions automatically).
+_EASTERN_TZ = ZoneInfo("America/New_York")
 from src.models.search import (
     DocumentationResult,
     FieldSearchResponse,
@@ -439,12 +445,19 @@ class TicketSearchService:
 
     @staticmethod
     def _format_date(raw_date: str | None) -> str | None:
-        """Format an Athena ISO date string to HH:MM MM/DD/YYYY.
+        """Format an Athena ISO date string to HH:MM MM/DD/YYYY in US Eastern time.
+
+        Athena stores/returns lifecycle timestamps in UTC (typically with a
+        trailing ``Z``). UPHS / Penn Medicine operates in the US Eastern
+        timezone, so the parsed instant is converted to ``America/New_York``
+        (handling EST/EDT automatically) before formatting. A naive value with
+        no offset is assumed to be UTC, matching how Athena emits data.
 
         Handles formats:
         - ``2024-01-15T10:30:00Z``
         - ``2024-01-15T10:30:00.000Z``
         - ``2024-01-15T10:30:00``
+        - ``2026-01-14T00:05:41.79-05:00``
 
         Returns the original string if parsing fails.
         """
@@ -455,6 +468,12 @@ class TicketSearchService:
         # timezone offsets (e.g., "2026-01-14T00:05:41.79-05:00")
         try:
             dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+            # Treat naive timestamps (no offset supplied) as UTC.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            # Convert to US Eastern before formatting so displayed times match
+            # the local time tickets were actually created.
+            dt = dt.astimezone(_EASTERN_TZ)
             return dt.strftime("%H:%M %m/%d/%Y")
         except (ValueError, AttributeError):
             pass

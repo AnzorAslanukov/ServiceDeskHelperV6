@@ -353,18 +353,12 @@ def _get_field(data: dict[str, Any], *keys: str) -> Any:
 
 
 def _format_datetime(raw: str | None) -> str | None:
-    """Format an Athena ISO date string to HH:MM MM/DD/YYYY."""
-    if not raw:
-        return None
-    from datetime import datetime
-    # Use fromisoformat which handles all ISO 8601 variants including
-    # timezone offsets (e.g., "2026-01-14T00:05:41.79-05:00")
-    try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        return dt.strftime("%H:%M %m/%d/%Y")
-    except (ValueError, AttributeError):
-        pass
-    return raw
+    """Format an Athena ISO date string to HH:MM MM/DD/YYYY in US Eastern time.
+
+    Delegates to :meth:`TicketSearchService._format_date` so the ticket detail
+    view uses the exact same UTC→Eastern conversion as Feature #1 search results.
+    """
+    return TicketSearchService._format_date(raw)
 
 
 def _extract_location_path(raw_ticket: dict[str, Any]) -> str | None:

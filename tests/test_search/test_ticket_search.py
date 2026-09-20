@@ -334,7 +334,8 @@ def test_map_ticket_handles_nested_objects(sample_athena_ticket):
     assert result.affected_user == "John Smith"
     assert result.support_group == "EUS\\HUP"
     assert result.priority == 3
-    assert result.created_date == "10:30 01/15/2024"
+    # 10:30 UTC (createdDate has a Z suffix) is 05:30 US Eastern in January (EST).
+    assert result.created_date == "05:30 01/15/2024"
     assert result.location == "HUP"
 
 
@@ -389,7 +390,8 @@ def test_map_ticket_view_endpoint_format():
     assert result.support_group == "Ambulatory Clinical (LGH)"
     assert result.affected_user == "Massey, Chuck"
     assert result.priority == 2
-    assert result.created_date == "19:57 04/13/2026"
+    # 19:57 naive UTC is 15:57 US Eastern in April (EDT).
+    assert result.created_date == "15:57 04/13/2026"
     assert result.location == "LGH\\Downtown Outpatient Pavilion (DOP)"
 
 
@@ -812,23 +814,39 @@ def test_extract_name_none():
 
 
 def test_format_date_iso_with_z():
-    """_format_date should format ISO dates with Z suffix."""
-    assert TicketSearchService._format_date("2024-01-15T10:30:00Z") == "10:30 01/15/2024"
+    """_format_date should convert UTC (Z) timestamps to US Eastern (EST, -5)."""
+    # 10:30 UTC in January is 05:30 EST.
+    assert TicketSearchService._format_date("2024-01-15T10:30:00Z") == "05:30 01/15/2024"
 
 
 def test_format_date_iso_with_millis_and_z():
-    """_format_date should format ISO dates with milliseconds and Z suffix."""
-    assert TicketSearchService._format_date("2026-04-13T19:57:18.303Z") == "19:57 04/13/2026"
+    """_format_date should convert UTC millis timestamps to US Eastern (EDT, -4)."""
+    # 19:57 UTC in April is 15:57 EDT.
+    assert TicketSearchService._format_date("2026-04-13T19:57:18.303Z") == "15:57 04/13/2026"
 
 
 def test_format_date_iso_with_millis_no_z():
-    """_format_date should format ISO dates with milliseconds but no Z suffix."""
-    assert TicketSearchService._format_date("2026-04-13T19:57:18.303") == "19:57 04/13/2026"
+    """_format_date should treat naive millis timestamps as UTC and convert to Eastern."""
+    assert TicketSearchService._format_date("2026-04-13T19:57:18.303") == "15:57 04/13/2026"
 
 
 def test_format_date_iso_no_z():
-    """_format_date should format ISO dates without Z suffix."""
-    assert TicketSearchService._format_date("2024-06-01T08:00:00") == "08:00 06/01/2024"
+    """_format_date should treat naive timestamps as UTC and convert to Eastern (EDT, -4)."""
+    # 08:00 UTC in June is 04:00 EDT.
+    assert TicketSearchService._format_date("2024-06-01T08:00:00") == "04:00 06/01/2024"
+
+
+def test_format_date_est_vs_edt_dst():
+    """_format_date should apply the correct offset for EST (-5) vs EDT (-4)."""
+    # Same UTC wall-clock, different seasons -> different local hour due to DST.
+    assert TicketSearchService._format_date("2024-01-15T12:00:00Z") == "07:00 01/15/2024"  # EST
+    assert TicketSearchService._format_date("2024-07-15T12:00:00Z") == "08:00 07/15/2024"  # EDT
+
+
+def test_format_date_explicit_eastern_offset_preserved():
+    """_format_date should honour an explicit Eastern offset already in the value."""
+    # 00:05 at -05:00 is already Eastern local time; no shift expected.
+    assert TicketSearchService._format_date("2026-01-14T00:05:41.79-05:00") == "00:05 01/14/2026"
 
 
 def test_format_date_unknown_format_fallback():
