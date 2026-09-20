@@ -57,11 +57,6 @@
                         <option value="gt">Greater Than (gt)</option>
                         <option value="lt">Less Than (lt)</option>
                     </select>
-                    <div class="form-hint">
-                        Tip: “Contains”/“Like” run a slow full-text scan on free-text
-                        fields like Title and may time out. For word/phrase lookups,
-                        prefer Description or Semantic Search.
-                    </div>
                 </div>
             </div>
 
@@ -108,14 +103,14 @@
                     <div class="operator-item-head">
                         <span class="operator-legend-label">Contains</span> <code>contains</code>
                     </div>
-                    <div class="operator-item-desc">The field value includes the entered text anywhere within it.</div>
+                    <div class="operator-item-desc">The field value includes the entered text anywhere within it. Note: on free-text fields like Title this runs a slow full-text scan and may time out — for word/phrase lookups, prefer Description or Semantic Search.</div>
                 </div>
 
                 <div class="operator-item op-like">
                     <div class="operator-item-head">
                         <span class="operator-legend-label">Like</span> <code>like</code>
                     </div>
-                    <div class="operator-item-desc">Partial / wildcard-style pattern match on the field value.</div>
+                    <div class="operator-item-desc">Partial / wildcard-style pattern match on the field value. Like Contains, this is a slow full-text scan on free-text fields and may time out — prefer Description or Semantic Search for word/phrase lookups.</div>
                 </div>
 
                 <div class="operator-item op-gt">
