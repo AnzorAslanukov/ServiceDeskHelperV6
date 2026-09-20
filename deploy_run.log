@@ -1,0 +1,10 @@
+
+[96m════════════════════════════════════════════════════════════
+  Service Desk Helper — Deploy to Production
+════════════════════════════════════════════════════════════[0m
+
+  [93m→ git config --global --add safe.directory "C:/Users/aslanuka_wa1/Documents/projects/service_desk_helper"[0m
+
+[1m[1/8][0m [96mPushing local changes to GitHub[0m
+──────────────────────────────────────────────────
+  [93m→ git add -A[0m
