@@ -40,6 +40,18 @@ PROJECT_DIR = r"C:\projects\service_desk_helper"
 SERVER_URL = "http://10.192.46.182:8000/health"
 SSH_OPTS = "-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 
+# Name of the Windows Scheduled Task that runs the production server (created by
+# deploy/setup_service.ps1). Deploys stop/start the server THROUGH this task so
+# the run mechanism, interpreter, and working directory stay consistent with the
+# registered service — instead of a fragile detached SSH session.
+TASK_NAME = "ServiceDeskHelper"
+
+# How long to wait for the server to answer its health check after a start.
+# A cold start imports numpy/scikit-learn and memory-maps the multi-GB ticket
+# embeddings file, which can take well over the old fixed 8s wait — so we poll.
+HEALTH_TIMEOUT_SECONDS = 90
+HEALTH_POLL_INTERVAL_SECONDS = 3
+
 # Local + remote locations of the ticket vector files. These are large
 # (~3.1 GB .npy) and gitignored, so they are transferred OUT-OF-BAND via SCP
 # over the same SSH channel used above — NEVER through GitHub (which would
@@ -757,8 +769,12 @@ def main():
     else:
         info("Skipping embeddings update (code-only deploy)")
 
-    # Step 5: Stop server
+    # Step 5: Stop server via the scheduled task (the production run mechanism).
+    # Stopping the task is authoritative; we then also force-kill any stray python
+    # process so the embeddings file is no longer memory-mapped and the step 6
+    # atomic swap can rename it without hitting WinError 32 ("file in use").
     step(5, total_steps, "Stopping current server")
+    ssh(f"Stop-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue")
     ssh("Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force")
     success("Server stopped")
     time.sleep(2)
@@ -781,32 +797,49 @@ def main():
     else:
         info("No embeddings to apply (skipped, unchanged, or staging failed)")
 
-    # Step 7: Start server via background SSH session (only reliable method)
-    step(7, total_steps, "Starting server (background SSH session)")
-    start_cmd = (
-        f'start /b ssh {SSH_OPTS} {SERVER} '
-        f'"Set-Location \'{PROJECT_DIR}\'; python -m uvicorn src.main:app --host 0.0.0.0 --port 8000" '
-        f'> nul 2>&1'
-    )
-    info(start_cmd)
-    subprocess.Popen(start_cmd, shell=True)
-    success("Server starting in background SSH session")
+    # Step 7: Start server via the scheduled task. Start-ScheduledTask launches
+    # the registered ServiceDeskHelper task (correct interpreter, working dir, and
+    # auto-restart settings) and returns immediately; the server keeps running
+    # after our SSH session closes — unlike the old detached `start /b ssh ... >nul`
+    # launch, which discarded all output and did not reliably outlive the session.
+    step(7, total_steps, "Starting server (scheduled task)")
+    ok, _ = ssh(f"Start-ScheduledTask -TaskName '{TASK_NAME}'")
+    if ok:
+        # Report the task's state so a failed launch is visible instead of silent.
+        ssh(f"(Get-ScheduledTask -TaskName '{TASK_NAME}').State")
+        success("Server start requested via scheduled task")
+    else:
+        error(f"Could not start scheduled task '{TASK_NAME}' — check it exists "
+              f"(deploy/setup_service.ps1) and the SSH user can control it")
+        errors.append("server start")
 
-    # Step 8: Verify
+    # Step 8: Verify by polling the health endpoint until it answers or we time
+    # out. A single fixed sleep was too short for a cold start (numpy/scikit-learn
+    # import + mmap of the multi-GB embeddings file), which made healthy starts
+    # look like failures. Polling succeeds as soon as the port is bound.
     step(8, total_steps, "Verifying server is responding")
-    info("Waiting for server to start...")
-    time.sleep(8)
+    info(f"Polling {SERVER_URL} for up to {HEALTH_TIMEOUT_SECONDS}s...")
 
-    try:
-        import urllib.request
-        resp = urllib.request.urlopen(SERVER_URL, timeout=10)
-        if resp.status == 200:
-            success(f"Server is UP — {SERVER_URL} returned 200")
-        else:
-            error(f"Server returned HTTP {resp.status}")
-            errors.append("health check")
-    except Exception as e:
-        error(f"Could not reach server: {e}")
+    import urllib.request
+    deadline = time.time() + HEALTH_TIMEOUT_SECONDS
+    healthy = False
+    last_err = None
+    while time.time() < deadline:
+        try:
+            resp = urllib.request.urlopen(SERVER_URL, timeout=10)
+            if resp.status == 200:
+                healthy = True
+                break
+            last_err = f"HTTP {resp.status}"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(HEALTH_POLL_INTERVAL_SECONDS)
+
+    if healthy:
+        success(f"Server is UP — {SERVER_URL} returned 200")
+    else:
+        error(f"Server did not become healthy within {HEALTH_TIMEOUT_SECONDS}s "
+              f"(last error: {last_err})")
         errors.append("health check")
 
     # Summary
