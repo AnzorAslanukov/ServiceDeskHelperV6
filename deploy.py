@@ -40,11 +40,17 @@ PROJECT_DIR = r"C:\projects\service_desk_helper"
 SERVER_URL = "http://10.192.46.182:8000/health"
 SSH_OPTS = "-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 
-# Name of the Windows Scheduled Task that runs the production server (created by
-# deploy/setup_service.ps1). Deploys stop/start the server THROUGH this task so
-# the run mechanism, interpreter, and working directory stay consistent with the
-# registered service — instead of a fragile detached SSH session.
-TASK_NAME = "ServiceDeskHelper"
+# The server is launched detached via the Windows Task Scheduler using
+# schtasks.exe (NOT the CIM-based *-ScheduledTask PowerShell cmdlets, which are
+# "Cannot connect to CIM server. Access denied" over this non-elevated SSH
+# session). schtasks talks to the Task Scheduler service directly, so the server
+# survives the SSH session closing. The task's action is a committed .cmd file
+# (RUN_SERVER_CMD) so all command-line quoting lives in that file — passing a
+# full python command line through SSH → PowerShell → schtasks /TR mangles the
+# quotes around "C:\Program Files\...".
+DEPLOY_TASK = "SDH_Deploy"
+RUN_SERVER_CMD = f"{PROJECT_DIR}\\deploy\\run_server.cmd"
+SERVER_LOG = f"{PROJECT_DIR}\\logs\\server.log"
 
 # How long to wait for the server to answer its health check after a start.
 # A cold start imports numpy/scikit-learn and memory-maps the multi-GB ticket
@@ -769,12 +775,11 @@ def main():
     else:
         info("Skipping embeddings update (code-only deploy)")
 
-    # Step 5: Stop server via the scheduled task (the production run mechanism).
-    # Stopping the task is authoritative; we then also force-kill any stray python
-    # process so the embeddings file is no longer memory-mapped and the step 6
-    # atomic swap can rename it without hitting WinError 32 ("file in use").
+    # Step 5: Stop the running server by force-killing python. The server runs as
+    # a plain `python -m uvicorn` process here, so this both stops it and releases
+    # the memory-mapped embeddings file so the step 6 atomic swap can rename it
+    # without hitting WinError 32 ("file in use").
     step(5, total_steps, "Stopping current server")
-    ssh(f"Stop-ScheduledTask -TaskName '{TASK_NAME}' -ErrorAction SilentlyContinue")
     ssh("Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force")
     success("Server stopped")
     time.sleep(2)
@@ -797,20 +802,29 @@ def main():
     else:
         info("No embeddings to apply (skipped, unchanged, or staging failed)")
 
-    # Step 7: Start server via the scheduled task. Start-ScheduledTask launches
-    # the registered ServiceDeskHelper task (correct interpreter, working dir, and
-    # auto-restart settings) and returns immediately; the server keeps running
-    # after our SSH session closes — unlike the old detached `start /b ssh ... >nul`
-    # launch, which discarded all output and did not reliably outlive the session.
-    step(7, total_steps, "Starting server (scheduled task)")
-    ok, _ = ssh(f"Start-ScheduledTask -TaskName '{TASK_NAME}'")
+    # Step 7: Start the server detached via the Task Scheduler (schtasks.exe).
+    # We (re)create a ONCE task whose action is the committed run_server.cmd, then
+    # trigger it with /Run. The task runs under the Task Scheduler service, so the
+    # uvicorn process keeps running after this SSH session closes — unlike the old
+    # `start /b ssh ... > nul` launch (silent, didn't survive) and unlike a plain
+    # remote Start-Process (the child was killed when the SSH session ended).
+    step(7, total_steps, "Starting server (scheduled task via schtasks)")
+    # /Create with /F is idempotent — it refreshes the action each deploy in case
+    # run_server.cmd's path or contents changed. /ST is a required-but-unused time
+    # for a ONCE task; schtasks may warn it is in the past, which is harmless
+    # because we trigger the task immediately with /Run rather than on schedule.
+    create_cmd = (
+        f'schtasks /Create /TN {DEPLOY_TASK} '
+        f'/TR "{RUN_SERVER_CMD}" /SC ONCE /ST 00:00 /F'
+    )
+    ssh(create_cmd)
+    ok, _ = ssh(f"schtasks /Run /TN {DEPLOY_TASK}")
     if ok:
-        # Report the task's state so a failed launch is visible instead of silent.
-        ssh(f"(Get-ScheduledTask -TaskName '{TASK_NAME}').State")
-        success("Server start requested via scheduled task")
+        success("Server start triggered via scheduled task")
+        info(f"Server log: {SERVER_LOG}")
     else:
-        error(f"Could not start scheduled task '{TASK_NAME}' — check it exists "
-              f"(deploy/setup_service.ps1) and the SSH user can control it")
+        error("Could not trigger server start via schtasks — check the SSH user "
+              "can create/run scheduled tasks and deploy/run_server.cmd exists")
         errors.append("server start")
 
     # Step 8: Verify by polling the health endpoint until it answers or we time
@@ -841,6 +855,13 @@ def main():
         error(f"Server did not become healthy within {HEALTH_TIMEOUT_SECONDS}s "
               f"(last error: {last_err})")
         errors.append("health check")
+        # Surface the server-side startup output so the real cause is visible
+        # instead of just a connection-refused. run_server.cmd redirects both
+        # stdout and stderr into server.log, so tail that.
+        info("Last lines of server log:")
+        ssh(f"if (Test-Path '{SERVER_LOG}') "
+            f"{{ Get-Content '{SERVER_LOG}' -Tail 20 }} "
+            f"else {{ 'No server.log found' }}")
 
     # Summary
     print(f"\n{'═' * 60}")

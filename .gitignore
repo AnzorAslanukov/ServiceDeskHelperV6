@@ -44,6 +44,13 @@ athena_ticketing_system_documentation/
 temp_bulk.js
 -p/
 
+# Deploy run artifacts (server logs, transient run state)
+logs/
+deploy_run.log
+deploy_run.err.log
+deploy_pid.txt
+deploy_stdin.txt
+
 # Cline config
 .clineignore
 
