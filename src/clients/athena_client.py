@@ -20,12 +20,36 @@ class AthenaClient:
         self._token: str | None = None
         self._token_expiry: float = 0.0
         self._http_client: httpx.AsyncClient | None = None
+        self._search_http_client: httpx.AsyncClient | None = None
+
+    def _default_timeout(self) -> float:
+        """Per-request timeout for lightweight calls (auth, single fetch)."""
+        return getattr(self._settings, "athena_request_timeout", 30.0)
+
+    def _search_timeout(self) -> float:
+        """Per-request timeout for the (potentially slow) view/search endpoint."""
+        return getattr(self._settings, "athena_search_timeout", 90.0)
 
     async def _get_http_client(self) -> httpx.AsyncClient:
-        """Lazy-initialize the async HTTP client."""
+        """Lazy-initialize the async HTTP client for lightweight calls."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            self._http_client = httpx.AsyncClient(timeout=self._default_timeout())
         return self._http_client
+
+    async def _get_search_http_client(self) -> httpx.AsyncClient:
+        """
+        Lazy-initialize a separate HTTP client with a longer timeout, used for
+        the view/filter search endpoint.
+
+        Substring ('contains'/'like') predicates on free-text fields such as
+        Title can take much longer than the default timeout to evaluate
+        server-side. Using a dedicated client with a wider timeout budget lets
+        those scans complete instead of raising httpx.ReadTimeout (which would
+        surface as an empty error / "nothing comes up" in the UI).
+        """
+        if self._search_http_client is None or self._search_http_client.is_closed:
+            self._search_http_client = httpx.AsyncClient(timeout=self._search_timeout())
+        return self._search_http_client
 
     async def _authenticate(self) -> str:
         """Acquire a new OAuth2 JWT token from Athena."""
@@ -115,7 +139,7 @@ class AthenaClient:
         Returns:
             Dict with 'results', 'total', 'page', 'page_size', 'has_more'.
         """
-        client = await self._get_http_client()
+        client = await self._get_search_http_client()
         headers = await self._auth_headers()
         # Build URL with pagination query params
         url = self._settings.athena_incident_view_url
@@ -151,7 +175,7 @@ class AthenaClient:
         Returns:
             Dict with 'results', 'total', 'page', 'page_size', 'has_more'.
         """
-        client = await self._get_http_client()
+        client = await self._get_search_http_client()
         headers = await self._auth_headers()
         url = self._settings.athena_servicerequest_view_url
         separator = "&" if "?" in url else "?"
@@ -205,7 +229,7 @@ class AthenaClient:
         Returns:
             List of matching change request records.
         """
-        client = await self._get_http_client()
+        client = await self._get_search_http_client()
         headers = await self._auth_headers()
         # Build the CR view URL from base URL if not configured
         cr_view_url = self._settings.athena_changerequest_view_url
@@ -819,7 +843,10 @@ class AthenaClient:
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def close(self) -> None:
-        """Close the underlying HTTP client."""
+        """Close the underlying HTTP clients."""
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
             self._http_client = None
+        if self._search_http_client and not self._search_http_client.is_closed:
+            await self._search_http_client.aclose()
+            self._search_http_client = None

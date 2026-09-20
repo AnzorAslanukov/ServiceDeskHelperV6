@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -30,6 +31,49 @@ router = APIRouter(prefix="/ui", tags=["frontend"])
 # Templates directory
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+# Operators that trigger a slow server-side substring scan on free-text fields.
+_SUBSTRING_OPERATORS = frozenset({"contains", "like"})
+
+
+def _field_search_error_message(exc: Exception, field: str, operator: str) -> str:
+    """
+    Translate a field-search exception into a clear, actionable message.
+
+    Never returns an empty string (httpx.ReadTimeout's str() is empty), which
+    previously rendered as a blank error box that looked like "nothing found".
+    """
+    op = (operator or "").lower()
+    if isinstance(exc, httpx.TimeoutException):
+        if op in _SUBSTRING_OPERATORS:
+            return (
+                f"Search timed out. The “{operator}” operator on “{field}” runs a "
+                "slow full-text scan on the server. Try a more specific value, use "
+                "the “eq” (Equals) operator, or use Description / Semantic Search "
+                "for free-text lookups."
+            )
+        return (
+            "Search timed out while contacting the ticketing system. Please try "
+            "again, or narrow your search."
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = (
+            exc.response.status_code if exc.response is not None else "unknown"
+        )
+        if op in _SUBSTRING_OPERATORS:
+            return (
+                f"The ticketing system rejected this search (HTTP {status}). The "
+                f"“{operator}” operator is not supported on “{field}”. Try the "
+                "“eq” (Equals) operator, or use Description / Semantic Search."
+            )
+        return (
+            f"The ticketing system returned an error (HTTP {status}). This "
+            f"field/operator combination (“{field}” “{operator}”) may not be "
+            "supported. Try a different operator such as “eq”."
+        )
+    # Fallback: surface the string but guarantee it is non-empty.
+    return str(exc) or f"Search failed: {type(exc).__name__}."
 
 
 # ── Page Routes ────────────────────────────────────────────────────────
@@ -109,7 +153,11 @@ async def search_field_partial(
         return templates.TemplateResponse(
             request,
             "search/partials/field_results.html",
-            {"error": str(e), "tickets": [], "total": 0},
+            {
+                "error": _field_search_error_message(e, field, operator),
+                "tickets": [],
+                "total": 0,
+            },
         )
 
 

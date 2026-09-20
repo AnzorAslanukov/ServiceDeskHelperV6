@@ -36,15 +36,41 @@ async def search_by_field(
 
     Example: Find all incidents where contactMethod = '215-555-1234'.
     Supports pagination via page and page_size parameters.
+
+    Errors are translated to clean HTTP responses: invalid input -> 400,
+    a slow upstream 'contains'/'like' scan that times out -> 504, other
+    upstream Athena failures -> 502 (never an unhandled 500).
     """
-    return await service.search_by_field(
-        field=request.field,
-        value=request.value,
-        ticket_type=request.ticket_type.value,
-        operator=request.operator,
-        page=request.page,
-        page_size=request.page_size,
-    )
+    try:
+        return await service.search_by_field(
+            field=request.field,
+            value=request.value,
+            ticket_type=request.ticket_type.value,
+            operator=request.operator,
+            page=request.page,
+            page_size=request.page_size,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Search timed out. The '{request.operator}' operator on "
+                f"'{request.field}' can be slow upstream; try a more specific "
+                "value or the 'eq' operator."
+            ),
+        )
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Upstream service error (HTTP {status}). The field/operator "
+                f"combination ('{request.field}' '{request.operator}') may not "
+                "be supported."
+            ),
+        )
 
 
 @router.post("/description", response_model=FieldSearchResponse)

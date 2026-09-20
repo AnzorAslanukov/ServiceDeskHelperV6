@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     athena_ir_support_group_guid: str = Field(alias="ATHENA_IR_SUPPORT_GROUP_GUID")
     athena_sr_support_group_guid: str = Field(alias="ATHENA_SR_SUPPORT_GROUP_GUID")
     athena_json_template: str = Field(alias="ATHENA_JSON_TEMPLATE")
+    # Default per-request timeout (seconds) for lightweight Athena calls
+    # (auth, single-ticket fetch).
+    athena_request_timeout: float = Field(default=30.0, alias="ATHENA_REQUEST_TIMEOUT")
+    # Longer timeout (seconds) for the view/filter search endpoint. Substring
+    # ('contains'/'like') predicates on free-text fields such as Title can be
+    # slow server-side; a short timeout makes them fail with an empty error,
+    # which surfaces as "nothing comes up" in the UI. This wider budget lets
+    # those scans complete.
+    athena_search_timeout: float = Field(default=90.0, alias="ATHENA_SEARCH_TIMEOUT")
 
     # Databricks API (serving endpoints only — SQL warehouse no longer used at runtime)
     databricks_api_key: str = Field(alias="DATABRICKS_API_KEY")
