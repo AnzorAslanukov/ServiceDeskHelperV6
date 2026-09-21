@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     session_expire_hours: float = Field(default=12.0, alias="SESSION_EXPIRE_HOURS")
     enable_test_accounts: bool = Field(default=False, alias="ENABLE_TEST_ACCOUNTS")
 
+    # Bug Report feature
+    # Password that unlocks the bug-report admin page (/ui/bug-report/admin).
+    # If left blank, the admin page is locked for everyone.
+    bug_report_admin_password: str = Field(
+        default="", alias="BUG_REPORT_ADMIN_PASSWORD"
+    )
+    # How long an admin unlock stays valid before the password is required again.
+    bug_report_admin_unlock_hours: float = Field(
+        default=8.0, alias="BUG_REPORT_ADMIN_UNLOCK_HOURS"
+    )
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

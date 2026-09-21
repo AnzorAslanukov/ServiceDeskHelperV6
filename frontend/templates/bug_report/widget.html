@@ -1,0 +1,54 @@
+{# Always-visible bug-report widget, anchored to the bottom-right of every page. #}
+<div id="bug-report-widget">
+    <button type="button" class="bug-report-pill" onclick="toggleBugReport()"
+            aria-label="Report a bug" title="Report a bug">
+        🐞 <span class="bug-report-pill-text">Report a bug</span>
+    </button>
+
+    <div class="bug-report-panel" id="bug-report-panel" role="dialog" aria-label="Report a bug">
+        <div class="bug-report-panel-header">
+            <span>🐞 Report a bug</span>
+            <button type="button" class="bug-report-close" onclick="toggleBugReport()"
+                    aria-label="Close">✕</button>
+        </div>
+
+        <div class="bug-report-panel-body" id="bug-report-body">
+            <form hx-post="/ui/bug-report"
+                  hx-target="#bug-report-body"
+                  hx-swap="innerHTML"
+                  onsubmit="captureBugContext(this)">
+                <input type="hidden" name="page_url" value="">
+                <input type="hidden" name="user_agent" value="">
+                <input type="hidden" name="feature" value="">
+
+                <div class="form-group mb-1">
+                    <label class="form-label">Summary</label>
+                    <input type="text" name="summary" class="form-input"
+                           maxlength="200" placeholder="One-line summary of the problem" required>
+                </div>
+
+                <div class="form-group mb-1">
+                    <label class="form-label">What happened / steps to reproduce</label>
+                    <textarea name="description" class="form-input bug-report-textarea"
+                              maxlength="5000" rows="4"
+                              placeholder="Describe the bug and how to reproduce it" required></textarea>
+                </div>
+
+                <div class="form-group mb-1">
+                    <label class="form-label">Severity</label>
+                    <select name="severity" class="form-select">
+                        <option value="low">Low — minor / cosmetic</option>
+                        <option value="medium" selected>Medium — feature partly broken</option>
+                        <option value="high">High — feature unusable</option>
+                        <option value="blocker">Blocker — app unusable</option>
+                    </select>
+                </div>
+
+                <div class="d-flex justify-between align-center">
+                    <span class="bug-report-hint">Your username &amp; page are attached automatically.</span>
+                    <button type="submit" class="btn btn-primary btn-sm">Submit</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>

@@ -11,6 +11,7 @@ An AI-powered IT service desk assistant built for Penn Medicine (UPHS). Provides
 | 3 | **Assignment Recommendation** | TF-IDF classifier (80.7% accuracy) that predicts the correct support group and priority for incoming tickets |
 | 4 | **Bulk Assignment** | Multi-user real-time WebSocket tool for processing the Service Desk Validation queue in bulk |
 | 5 | **Turnover Email** | Generates SEV turnover email drafts summarizing P1/P2 incidents and upcoming change requests |
+| — | **Bug Report** | Always-available bottom-right widget for reporting bugs; password-protected admin page to view/manage reports (stored as append-only JSONL) |
 
 ## Tech Stack
 
@@ -136,6 +137,11 @@ python cli.py assign IR1234567
 
 # Turnover email
 python cli.py turnover --sender "John Smith" --receiver "Jane Doe"
+
+# Bug reports
+python cli.py bug report -s "Search times out" -d "Title 'contains' hangs" --severity high
+python cli.py bug list --status open
+python cli.py bug status BUG-1 resolved
 ```
 
 See [CLI_README.md](CLI_README.md) for full CLI documentation.
@@ -155,6 +161,11 @@ See [CLI_README.md](CLI_README.md) for full CLI documentation.
 | POST | `/assignment/{ticket_id}` | Get assignment recommendation |
 | POST | `/turnover/generate` | Generate turnover email draft |
 | WS | `/bulk/ws/{user_id}` | Bulk assignment WebSocket |
+| POST | `/bug-report` | Submit a bug report (any authenticated user) |
+| GET | `/bug-report` | List bug reports (admin only) |
+| PATCH | `/bug-report/{id}/status` | Update a report's status (admin only) |
+| DELETE | `/bug-report/{id}` | Delete a report (admin only) |
+| GET | `/ui/bug-report/admin` | Password-protected admin page (view/manage reports) |
 
 ## ML Model
 

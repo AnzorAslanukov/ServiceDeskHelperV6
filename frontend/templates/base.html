@@ -39,6 +39,11 @@
                     <span class="nav-icon">📦</span>
                     <span>Bulk Assignment</span>
                 </a>
+                <div class="nav-section-label">Admin</div>
+                <a href="/ui/bug-report/admin" class="nav-item {% if active_page == 'bug_admin' %}active{% endif %}">
+                    <span class="nav-icon">🐞</span>
+                    <span>Bug Reports</span>
+                </a>
             </nav>
         </aside>
 
@@ -73,5 +78,8 @@
             </main>
         </div>
     </div>
+
+    <!-- Always-available bug report widget (bottom-right, non-intrusive) -->
+    {% include "bug_report/widget.html" %}
 </body>
 </html>

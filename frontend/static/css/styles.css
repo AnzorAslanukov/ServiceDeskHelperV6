@@ -3222,3 +3222,233 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
 .feature-about-card.fa-example { --fa-color: #805AD5;               --fa-bg: rgba(128, 90, 213, 0.10); }
 .feature-about-card.fa-tip     { --fa-color: var(--status-warning); --fa-bg: rgba(214, 158, 46, 0.10); }
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   Bug Report Widget (always-visible, bottom-right, non-intrusive)
+   ══════════════════════════════════════════════════════════════════════ */
+
+#bug-report-widget {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 500;
+}
+
+.bug-report-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 24px;
+    background: var(--penn-accent);
+    color: #fff;
+    font-family: inherit;
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: var(--shadow-md);
+    transition: background-color var(--transition-speed), transform var(--transition-speed);
+}
+
+.bug-report-pill:hover {
+    background: var(--penn-blue-lighter);
+    transform: translateY(-1px);
+}
+
+.bug-report-panel {
+    position: absolute;
+    right: 0;
+    bottom: 56px;
+    width: 360px;
+    max-width: calc(100vw - 40px);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow-lg);
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.bug-report-panel.open {
+    display: flex;
+}
+
+.bug-report-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: var(--penn-blue);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.92rem;
+}
+
+.bug-report-close {
+    background: none;
+    border: none;
+    color: #fff;
+    font-size: 1rem;
+    cursor: pointer;
+    opacity: 0.85;
+}
+
+.bug-report-close:hover {
+    opacity: 1;
+}
+
+.bug-report-panel-body {
+    padding: 16px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.bug-report-textarea {
+    resize: vertical;
+    min-height: 80px;
+    font-family: inherit;
+}
+
+.bug-report-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+/* ── Bug Report Admin Page ──────────────────────────────────────────── */
+
+.bug-admin-unlock {
+    max-width: 420px;
+    margin: 40px auto;
+    text-align: center;
+}
+
+.bug-admin-unlock-title {
+    font-size: 1.2rem;
+    color: var(--text-primary);
+    margin: 8px 0 4px;
+}
+
+.bug-admin-unlock-sub {
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+}
+
+.bug-admin-unlock-form {
+    text-align: left;
+}
+
+.bug-admin-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-color-light);
+}
+
+.bug-admin-count {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.bug-admin-count-label {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    margin-left: 4px;
+}
+
+.bug-card {
+    border: 1px solid var(--border-color);
+    border-left: 4px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    background: var(--bg-secondary);
+}
+
+.bug-card-open { border-left-color: var(--status-error); }
+.bug-card-in_progress { border-left-color: var(--status-warning); }
+.bug-card-resolved { border-left-color: var(--status-success); }
+.bug-card-wont_fix { border-left-color: var(--text-muted); }
+
+.bug-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.bug-card-idline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.bug-card-id {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.bug-card-delete {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.95rem;
+    opacity: 0.6;
+}
+
+.bug-card-delete:hover { opacity: 1; }
+
+.bug-card-summary {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.bug-card-desc {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    margin-bottom: 8px;
+}
+
+.bug-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.bug-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bug-card-actions-label {
+    margin: 0;
+    font-size: 0.78rem;
+}
+
+.bug-card-status-select {
+    max-width: 160px;
+}
+
+.bug-sev-low { background: var(--badge-bg); color: var(--text-muted); }
+.bug-sev-medium { background: rgba(74, 144, 217, 0.15); color: var(--status-info); }
+.bug-sev-high { background: rgba(214, 158, 46, 0.15); color: var(--status-warning); }
+.bug-sev-blocker { background: rgba(229, 62, 62, 0.15); color: var(--status-error); }
+
+.bug-status-open { background: rgba(229, 62, 62, 0.12); color: var(--status-error); }
+.bug-status-in_progress { background: rgba(214, 158, 46, 0.15); color: var(--status-warning); }
+.bug-status-resolved { background: rgba(56, 161, 105, 0.15); color: var(--status-success); }
+.bug-status-wont_fix { background: var(--badge-bg); color: var(--text-muted); }
+

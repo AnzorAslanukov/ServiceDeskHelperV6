@@ -21,11 +21,13 @@ from src.dependencies import (
     get_assignment_service,
     get_athena_client,
     get_bulk_assignment_service,
+    get_bug_report_service,
     get_chatbot_service,
     get_search_service,
     get_turnover_service,
 )
 from src.models.bulk import TicketAssignment
+from src.models.bug_report import BugReportRequest
 from src.models.turnover import TurnoverRequest
 
 
@@ -543,6 +545,63 @@ async def cmd_turnover(args) -> None:
     print(result.email_body)
 
 
+# ── Bug Report Commands ──────────────────────────────────────────────
+
+
+async def cmd_bug_report(args) -> None:
+    """Submit a new bug report from the CLI."""
+    service = get_bug_report_service()
+    payload = BugReportRequest(
+        summary=args.summary,
+        description=args.description,
+        severity=args.severity,
+        feature=args.feature or "",
+    )
+    report = service.submit(payload, reported_by=args.user)
+
+    if args.json:
+        _print_json(report)
+        return
+
+    print(_header(f"Bug report filed: {report.id}"))
+    print(f"  Summary:  {report.summary}")
+    print(f"  Severity: {report.severity}")
+    print(f"  By:       {report.reported_by}")
+
+
+async def cmd_bug_list(args) -> None:
+    """List stored bug reports."""
+    service = get_bug_report_service()
+    reports = service.list_reports(status=args.status)
+
+    if args.json:
+        print(json.dumps([r.model_dump() for r in reports], indent=2, default=str))
+        return
+
+    print(_header(f"Bug Reports ({len(reports)})"))
+    if not reports:
+        print("\n  No bug reports found.")
+        return
+
+    for r in reports:
+        print(f"\n  {r.id}  |  {r.severity.upper()}  |  {r.status}")
+        print(f"    Summary: {_truncate(r.summary)}")
+        print(f"    By:      {r.reported_by}  ({r.reported_at})")
+        if r.feature:
+            print(f"    Feature: {r.feature}")
+
+
+async def cmd_bug_status(args) -> None:
+    """Update a bug report's status."""
+    service = get_bug_report_service()
+    report = service.update_status(args.id, args.new_status)
+    if report is None:
+        print(f"Report {args.id} not found.", file=sys.stderr)
+        sys.exit(1)
+    print(f"{report.id} status set to '{report.status}'.")
+
+
+
 # ── Argument Parser ──────────────────────────────────────────────────
 
 
@@ -683,6 +742,40 @@ def build_parser() -> argparse.ArgumentParser:
     turnover_parser.add_argument("--voicemail-notes", default="", help="Voicemail notes")
     turnover_parser.add_argument("--hours-lookahead", type=int, default=24, help="Hours ahead for upcoming CRs (default: 24)")
 
+    # ── bug ───────────────────────────────────────────────────────────
+    bug_parser = subparsers.add_parser("bug", help="Bug Report: submit, list, and manage bug reports")
+    bug_sub = bug_parser.add_subparsers(dest="bug_action")
+
+    bug_report_p = bug_sub.add_parser("report", help="Submit a new bug report")
+    bug_report_p.add_argument("--summary", "-s", required=True, help="One-line summary")
+    bug_report_p.add_argument("--description", "-d", required=True, help="What happened / steps to reproduce")
+    bug_report_p.add_argument(
+        "--severity",
+        choices=["low", "medium", "high", "blocker"],
+        default="medium",
+        help="Severity (default: medium)",
+    )
+    bug_report_p.add_argument("--feature", default="", help="Feature/page where the bug occurred")
+    bug_report_p.add_argument("--user", default="cli", help="Reporter username (default: cli)")
+    bug_report_p.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    bug_list_p = bug_sub.add_parser("list", help="List stored bug reports")
+    bug_list_p.add_argument(
+        "--status",
+        choices=["open", "in_progress", "resolved", "wont_fix"],
+        default=None,
+        help="Filter by status",
+    )
+    bug_list_p.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    bug_status_p = bug_sub.add_parser("status", help="Update a report's status")
+    bug_status_p.add_argument("id", help="Report id, e.g. BUG-3")
+    bug_status_p.add_argument(
+        "new_status",
+        choices=["open", "in_progress", "resolved", "wont_fix"],
+        help="New status",
+    )
+
     return parser
 
 
@@ -741,6 +834,17 @@ def main() -> None:
 
     elif args.command == "turnover":
         handler = cmd_turnover
+
+    elif args.command == "bug":
+        if not args.bug_action:
+            parser.parse_args(["bug", "--help"])
+            sys.exit(0)
+        bug_handlers = {
+            "report": cmd_bug_report,
+            "list": cmd_bug_list,
+            "status": cmd_bug_status,
+        }
+        handler = bug_handlers[args.bug_action]
 
     else:
         parser.print_help()

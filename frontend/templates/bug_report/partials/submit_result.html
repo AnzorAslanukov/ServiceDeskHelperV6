@@ -1,0 +1,16 @@
+{% if error %}
+<div class="alert alert-error">
+    <span>⚠️</span>
+    <span>{{ error }}</span>
+</div>
+<button type="button" class="btn btn-secondary btn-sm" onclick="reopenBugForm()">Try again</button>
+{% else %}
+<div class="alert alert-success">
+    <span>✅</span>
+    <span>Thanks! Your report was filed as <strong>{{ report_id }}</strong>.</span>
+</div>
+<div class="d-flex justify-between align-center">
+    <span class="bug-report-hint">The team will review it.</span>
+    <button type="button" class="btn btn-secondary btn-sm" onclick="reopenBugForm()">Report another</button>
+</div>
+{% endif %}

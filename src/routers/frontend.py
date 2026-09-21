@@ -15,12 +15,23 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import ValidationError
 
-from src.dependencies import get_assignment_service, get_athena_client, get_chatbot_service, get_search_service
+from src.dependencies import (
+    get_assignment_service,
+    get_athena_client,
+    get_bug_report_service,
+    get_chatbot_service,
+    get_current_user,
+    get_search_service,
+)
+from src.models.bug_report import BugReportRequest
+from src.routers.bug_report import ADMIN_COOKIE
 from src.services.assignment import AssignmentService, LOCATION_GUID_TO_FULLNAME
+from src.services.bug_report import BugReportService
 from src.services.chatbot import ChatbotService
 from src.services.ticket_search import TicketSearchService
 
@@ -556,3 +567,157 @@ def _extract_rich_ticket_detail(raw_ticket: dict[str, Any], ticket_id: str) -> d
         "created_date": _format_datetime(_get_field(raw_ticket, "createdDate", "createDate")),
         "modified_date": _format_datetime(_get_field(raw_ticket, "lastModifiedDate", "lastModified")),
     }
+
+
+# ── Bug Report Feature ─────────────────────────────────────────────────
+
+
+@router.post("/bug-report", response_class=HTMLResponse)
+async def bug_report_submit_partial(
+    request: Request,
+    summary: str = Form(...),
+    description: str = Form(...),
+    severity: str = Form("medium"),
+    feature: str = Form(""),
+    page_url: str = Form(""),
+    user_agent: str = Form(""),
+    service: BugReportService = Depends(get_bug_report_service),
+):
+    """HTMX partial: submit a bug report from the always-visible widget."""
+    try:
+        payload = BugReportRequest(
+            summary=summary,
+            description=description,
+            severity=severity,  # type: ignore[arg-type]
+            feature=feature,
+            page_url=page_url,
+            user_agent=user_agent,
+        )
+    except ValidationError:
+        return templates.TemplateResponse(
+            request,
+            "bug_report/partials/submit_result.html",
+            {"error": "Please provide a short summary and a description (3+ characters each)."},
+        )
+
+    user = get_current_user(request)
+    reported_by = user.username if user else "unknown"
+    report = service.submit(payload, reported_by=reported_by)
+    return templates.TemplateResponse(
+        request,
+        "bug_report/partials/submit_result.html",
+        {"report_id": report.id},
+    )
+
+
+@router.get("/bug-report/admin", response_class=HTMLResponse)
+async def bug_report_admin_page(
+    request: Request,
+    service: BugReportService = Depends(get_bug_report_service),
+):
+    """Render the admin page — the unlock form or the report list."""
+    token = request.cookies.get(ADMIN_COOKIE)
+    if not service.validate_admin_token(token):
+        return templates.TemplateResponse(
+            request,
+            "bug_report/unlock.html",
+            {"active_page": "bug_admin"},
+        )
+    reports = service.list_reports()
+    return templates.TemplateResponse(
+        request,
+        "bug_report/admin.html",
+        {
+            "active_page": "bug_admin",
+            "reports": [r.model_dump() for r in reports],
+            "total": len(reports),
+        },
+    )
+
+
+@router.post("/bug-report/admin/unlock", response_class=HTMLResponse)
+async def bug_report_admin_unlock(
+    request: Request,
+    password: str = Form(...),
+    service: BugReportService = Depends(get_bug_report_service),
+):
+    """Verify the admin password and set the unlock cookie."""
+    if not service.verify_admin_password(password):
+        return templates.TemplateResponse(
+            request,
+            "bug_report/unlock.html",
+            {
+                "active_page": "bug_admin",
+                "error": "Incorrect password.",
+            },
+            status_code=401,
+        )
+    response = RedirectResponse(url="/ui/bug-report/admin", status_code=302)
+    response.set_cookie(
+        key=ADMIN_COOKIE,
+        value=service.create_admin_token(),
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@router.get("/bug-report/admin/logout")
+async def bug_report_admin_logout():
+    """Clear the admin unlock cookie."""
+    response = RedirectResponse(url="/ui/bug-report/admin", status_code=302)
+    response.delete_cookie(key=ADMIN_COOKIE, path="/")
+    return response
+
+
+@router.post("/bug-report/admin/{report_id}/status", response_class=HTMLResponse)
+async def bug_report_admin_update_status(
+    request: Request,
+    report_id: str,
+    status: str = Form(...),
+    service: BugReportService = Depends(get_bug_report_service),
+):
+    """HTMX partial: update a report's status and re-render its row."""
+    if not service.validate_admin_token(request.cookies.get(ADMIN_COOKIE)):
+        return HTMLResponse(
+            '<div class="alert alert-error"><span>⚠️</span><span>Admin session expired. '
+            'Reload the page.</span></div>',
+            status_code=403,
+        )
+    try:
+        report = service.update_status(report_id, status)
+    except ValueError as exc:
+        return HTMLResponse(
+            f'<div class="alert alert-error"><span>⚠️</span><span>{exc}</span></div>',
+            status_code=400,
+        )
+    if report is None:
+        return HTMLResponse(
+            f'<div class="alert alert-error"><span>⚠️</span><span>Report {report_id} '
+            'not found.</span></div>',
+            status_code=404,
+        )
+    return templates.TemplateResponse(
+        request,
+        "bug_report/partials/report_row.html",
+        {"report": report.model_dump()},
+    )
+
+
+@router.delete("/bug-report/admin/{report_id}", response_class=HTMLResponse)
+async def bug_report_admin_delete(
+    request: Request,
+    report_id: str,
+    service: BugReportService = Depends(get_bug_report_service),
+):
+    """HTMX partial: delete a report. Returns empty HTML to remove the row."""
+    if not service.validate_admin_token(request.cookies.get(ADMIN_COOKIE)):
+        return HTMLResponse(
+            '<div class="alert alert-error"><span>⚠️</span><span>Admin session expired. '
+            'Reload the page.</span></div>',
+            status_code=403,
+        )
+    service.delete_report(report_id)
+    return HTMLResponse("")
+

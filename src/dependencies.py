@@ -13,6 +13,7 @@ from src.clients.athena_client import AthenaClient
 from src.clients.databricks_client import DatabricksClient
 from src.services.assignment import AssignmentService
 from src.services.auth import AuthService, AuthUser
+from src.services.bug_report import BugReportService
 from src.services.chatbot import ChatbotService
 from src.services.knowledge_graph import KnowledgeGraphService
 from src.services.local_vector_store import LocalVectorStore
@@ -38,6 +39,17 @@ def get_auth_service() -> AuthService:
         session_secret=settings.session_secret_key,
         session_expire_hours=settings.session_expire_hours,
         enable_test_accounts=settings.enable_test_accounts,
+    )
+
+
+@lru_cache
+def get_bug_report_service() -> BugReportService:
+    """Provide a singleton BugReportService instance."""
+    settings = _get_settings()
+    return BugReportService(
+        admin_password=settings.bug_report_admin_password,
+        admin_secret=settings.session_secret_key,
+        admin_unlock_hours=settings.bug_report_admin_unlock_hours,
     )
 
 

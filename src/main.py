@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.dependencies import get_athena_client, get_current_user, get_databricks_client
-from src.routers import assignment, auth, chat, search, turnover
+from src.routers import assignment, auth, bug_report, chat, search, turnover
 from src.routers import frontend as frontend_router
 from feature4.router import router as bulk_router
 
@@ -108,6 +108,7 @@ app.include_router(search.router)
 app.include_router(chat.router)
 app.include_router(assignment.router)
 app.include_router(turnover.router)
+app.include_router(bug_report.router)
 app.include_router(bulk_router)
 
 # Register frontend router

@@ -3,6 +3,56 @@
    Theme toggle, tab switching, and utility functions
    ══════════════════════════════════════════════════════════════════════ */
 
+// ── Bug Report Widget ─────────────────────────────────────────────────
+
+function toggleBugReport() {
+    var panel = document.getElementById('bug-report-panel');
+    if (!panel) return;
+    var isOpen = panel.classList.toggle('open');
+    if (isOpen) {
+        var input = panel.querySelector('input[name="summary"]');
+        if (input) input.focus();
+    }
+}
+
+// Populate the hidden context fields just before the form is submitted, so we
+// capture the page URL, browser, and active feature without the user typing them.
+function captureBugContext(form) {
+    try {
+        var urlField = form.querySelector('input[name="page_url"]');
+        var uaField = form.querySelector('input[name="user_agent"]');
+        var featField = form.querySelector('input[name="feature"]');
+        if (urlField) urlField.value = window.location.pathname + window.location.search;
+        if (uaField) uaField.value = navigator.userAgent || '';
+        if (featField) {
+            // Infer feature from the active sidebar nav item, falling back to the path.
+            var active = document.querySelector('.sidebar-nav .nav-item.active span:last-child');
+            featField.value = active ? active.textContent.trim() : window.location.pathname;
+        }
+    } catch (e) {
+        // Non-fatal — submit proceeds even if context capture fails.
+    }
+}
+
+// After a submit result is shown, let the user file another report by
+// re-rendering the form (a fresh GET of the widget partial is overkill, so we
+// just reload the panel body from the server-rendered widget include).
+function reopenBugForm() {
+    // Re-fetch the widget's form by reloading the page section is unnecessary;
+    // simplest reliable approach: reload the panel body via a soft reset.
+    location.reload();
+}
+
+// Close the panel on Escape.
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+        var panel = document.getElementById('bug-report-panel');
+        if (panel && panel.classList.contains('open')) {
+            panel.classList.remove('open');
+        }
+    }
+});
+
 // ── Theme Management ──────────────────────────────────────────────────
 
 (function initTheme() {

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Bug Reports (Admin) — Service Desk Helper{% endblock %}
+{% block page_title %}Bug Reports — Admin{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="bug-admin-header">
+        <div>
+            <span class="bug-admin-count">{{ total }}</span>
+            <span class="bug-admin-count-label">report{{ '' if total == 1 else 's' }}</span>
+        </div>
+        <div class="d-flex align-center" style="gap: 12px;">
+            <a href="/ui/bug-report/admin" class="btn btn-secondary btn-sm">🔄 Refresh</a>
+            <a href="/ui/bug-report/admin/logout" class="btn btn-secondary btn-sm">🔒 Lock</a>
+        </div>
+    </div>
+
+    <div id="bug-report-list">
+        {% if reports %}
+            {% for report in reports %}
+                {% include "bug_report/partials/report_row.html" %}
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">
+                <div class="empty-state-icon">🐞</div>
+                <div class="empty-state-text">No bug reports yet</div>
+                <div class="empty-state-hint">Reports submitted from the widget will appear here.</div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

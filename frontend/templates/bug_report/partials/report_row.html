@@ -1,0 +1,42 @@
+{# One bug-report card. Used both in the admin list and as the HTMX swap
+   target after a status change. The wrapping element carries a stable id so
+   HTMX can target it for in-place updates and deletion. #}
+<div class="bug-card bug-card-{{ report.status }}" id="bug-row-{{ report.id }}">
+    <div class="bug-card-top">
+        <div class="bug-card-idline">
+            <span class="bug-card-id">{{ report.id }}</span>
+            <span class="badge bug-sev-{{ report.severity }}">{{ report.severity | upper }}</span>
+            <span class="badge bug-status-{{ report.status }}">{{ report.status | replace('_', ' ') | title }}</span>
+            {% if report.feature %}<span class="badge">{{ report.feature }}</span>{% endif %}
+        </div>
+        <button type="button" class="bug-card-delete"
+                title="Delete report"
+                hx-delete="/ui/bug-report/admin/{{ report.id }}"
+                hx-target="#bug-row-{{ report.id }}"
+                hx-swap="outerHTML"
+                hx-confirm="Delete {{ report.id }}? This cannot be undone.">🗑️</button>
+    </div>
+
+    <div class="bug-card-summary">{{ report.summary }}</div>
+    <div class="bug-card-desc">{{ report.description }}</div>
+
+    <div class="bug-card-meta">
+        <span>👤 {{ report.reported_by }}</span>
+        <span>🕒 {{ report.reported_at }}</span>
+        {% if report.page_url %}<span>🔗 {{ report.page_url }}</span>{% endif %}
+    </div>
+
+    <form class="bug-card-actions"
+          hx-post="/ui/bug-report/admin/{{ report.id }}/status"
+          hx-target="#bug-row-{{ report.id }}"
+          hx-swap="outerHTML">
+        <label class="form-label bug-card-actions-label">Set status</label>
+        <select name="status" class="form-select bug-card-status-select"
+                onchange="this.form.requestSubmit()">
+            <option value="open" {% if report.status == 'open' %}selected{% endif %}>Open</option>
+            <option value="in_progress" {% if report.status == 'in_progress' %}selected{% endif %}>In Progress</option>
+            <option value="resolved" {% if report.status == 'resolved' %}selected{% endif %}>Resolved</option>
+            <option value="wont_fix" {% if report.status == 'wont_fix' %}selected{% endif %}>Won't Fix</option>
+        </select>
+    </form>
+</div>

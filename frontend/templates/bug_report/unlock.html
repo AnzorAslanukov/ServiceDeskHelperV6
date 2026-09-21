@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Bug Reports (Admin) — Service Desk Helper{% endblock %}
+{% block page_title %}Bug Reports — Admin{% endblock %}
+
+{% block content %}
+<div class="card bug-admin-unlock">
+    <div class="empty-state-icon">🔒</div>
+    <h2 class="bug-admin-unlock-title">Admin access required</h2>
+    <p class="bug-admin-unlock-sub">Enter the admin password to view and manage bug reports.</p>
+
+    {% if error %}
+    <div class="alert alert-error">
+        <span>⚠️</span>
+        <span>{{ error }}</span>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/ui/bug-report/admin/unlock" class="bug-admin-unlock-form">
+        <div class="form-group mb-1">
+            <label class="form-label">Password</label>
+            <input type="password" name="password" class="form-input"
+                   placeholder="Admin password" autofocus required>
+        </div>
+        <button type="submit" class="btn btn-primary">Unlock</button>
+    </form>
+</div>
+{% endblock %}
