@@ -4,7 +4,17 @@ Service Desk Helper — One-Click Deploy Script
 Double-click this file in File Explorer to deploy the latest code
 to the production workstation.
 
-Steps performed:
+On startup you are asked ONE question: deploy to the LOCAL machine instead of
+the remote server? The remote workstation is not always reachable, so the local
+option lets you run SDH on the machine you are sitting at. Answer:
+  * NO  (default) → the original remote deploy over SSH/SCP (unchanged).
+  * YES            → deploy_local(): the same steps run against THIS machine with
+                     no SSH/SCP — git push, local pip install, optional local
+                     embeddings rebuild (no transfer/swap needed), stop any
+                     server on :8000, then start the server detached in a new
+                     console window and verify http://localhost:8000/health.
+
+Steps performed (REMOTE mode):
   1. Git push local changes to GitHub
   2. SSH to workstation → git pull
   3. Install any new dependencies
@@ -66,6 +76,19 @@ VECTORS_SUBDIR = r"data\vectors"
 EMBEDDINGS_NAME = "ticket_embeddings.npy"
 METADATA_NAME = "ticket_metadata.json"
 MANIFEST_NAME = "ticket_vectors_manifest.json"
+
+# ── Local deploy configuration ─────────────────────────────────────────
+# Used only by deploy_local() (chosen at the startup prompt) when the remote
+# workstation is unavailable and SDH must run on THIS machine. There is no SSH
+# or SCP in local mode: the code and the data\vectors\*.npy files on disk here
+# are exactly what the local server loads.
+LOCAL_SERVER_URL = "http://localhost:8000/health"
+LOCAL_APP_URL = "http://localhost:8000"
+# The committed launcher that runs uvicorn locally, detached from this script.
+# It resolves the project root from its own location, so it is checkout-agnostic.
+LOCAL_RUN_SERVER_CMD = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "deploy", "run_server_local.cmd"
+)
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -682,11 +705,104 @@ def _remote_live_matches_manifest():
 
 # ── Main Deploy Flow ───────────────────────────────────────────────────
 
+def poll_health(url, timeout_seconds=HEALTH_TIMEOUT_SECONDS,
+                interval_seconds=HEALTH_POLL_INTERVAL_SECONDS):
+    """
+    Poll a /health URL until it returns HTTP 200 or the timeout elapses.
+
+    Shared by both the remote and local deploy paths: a cold start imports
+    numpy/scikit-learn and memory-maps the multi-GB embeddings file, so a single
+    fixed sleep is too short — we poll until the port is bound and answering.
+
+    Returns (healthy: bool, last_error: str | None).
+    """
+    import urllib.request
+
+    info(f"Polling {url} for up to {timeout_seconds}s...")
+    deadline = time.time() + timeout_seconds
+    last_err = None
+    while time.time() < deadline:
+        try:
+            resp = urllib.request.urlopen(url, timeout=10)
+            if resp.status == 200:
+                return True, None
+            last_err = f"HTTP {resp.status}"
+        except Exception as e:  # noqa: BLE001 - any transient error → keep polling
+            last_err = str(e)
+        time.sleep(interval_seconds)
+    return False, last_err
+
+
+def stop_local_server():
+    """
+    Best-effort stop of any local uvicorn/python bound to port 8000.
+
+    Finds the PID owning TCP :8000 via `netstat` and kills it with taskkill. Any
+    failure is non-fatal (there may simply be nothing running yet).
+    """
+    try:
+        result = subprocess.run(
+            'netstat -ano -p tcp | findstr ":8000"',
+            shell=True, capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        info(f"(could not query port 8000: {e})")
+        return
+    pids = set()
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        # netstat columns: Proto  Local  Foreign  State  PID
+        if len(parts) >= 5 and ("LISTENING" in line or "ESTABLISHED" in line):
+            pid = parts[-1]
+            if pid.isdigit() and pid != "0":
+                pids.add(pid)
+    for pid in pids:
+        info(f"Killing PID {pid} on :8000")
+        run_local(f"taskkill /F /PID {pid}")
+
+
+def start_local_server():
+    """
+    Launch run_server_local.cmd in a NEW, detached console window so the server
+    keeps running after deploy.py exits.
+
+    Uses `cmd /c start` so a fresh console is created and this script does not
+    block. DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP ensure the launcher is not
+    tied to deploy.py's console lifetime.
+    """
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    subprocess.Popen(
+        ["cmd", "/c", "start", "", "cmd", "/k", LOCAL_RUN_SERVER_CMD],
+        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+
+
 def main():
+    """
+    Entry point. Ask once whether to deploy LOCALLY (this machine) or to the
+    REMOTE workstation, then dispatch. Default is remote to preserve the original
+    behavior — including for non-interactive runs, where prompt_yes_no returns
+    the default.
+    """
     # Enable ANSI colors on Windows
     os.system("")
 
     banner()
+
+    use_local = prompt_yes_no(
+        "Deploy to the LOCAL machine instead of the remote server? "
+        "(Choose YES if the remote workstation is unavailable.)",
+        default=False,
+    )
+    if use_local:
+        deploy_local()
+    else:
+        deploy_remote()
+
+
+def deploy_remote():
     total_steps = 8
     errors = []
     # Whether stage_embeddings() left *.tmp files that still need to be swapped
@@ -870,6 +986,165 @@ def main():
         print(f"    Application: http://10.192.46.182:8000")
     else:
         print(f"{Colors.RED}{Colors.BOLD}  ✗ DEPLOY COMPLETED WITH ERRORS{Colors.RESET}")
+        print(f"    Issues: {', '.join(errors)}")
+    print(f"{'═' * 60}\n")
+
+
+def deploy_local():
+    """
+    Deploy and run SDH on THIS (local) machine — used when the remote
+    workstation is unavailable. Mirrors the remote flow for full parity but with
+    NO SSH/SCP:
+
+      1. Git commit & push (same as remote — keeps GitHub in sync).
+      2. (No remote git reset — the local working tree IS the code we run.)
+      3. Local pip install of requirements.
+      4. Optionally REBUILD embeddings locally (no transfer/swap — the rebuilt
+         files land straight in data\\vectors, which the local server loads).
+      5. Stop any server already listening on :8000 locally.
+      6. (No atomic swap — nothing was transferred.)
+      7. Start the server detached in a new console window (run_server_local.cmd).
+      8. Verify http://localhost:8000/health.
+    """
+    total_steps = 8
+    errors = []
+    project_root = os.path.dirname(os.path.abspath(__file__))
+
+    info("LOCAL deploy selected — running SDH on this machine (no SSH/SCP).")
+
+    # Pre-flight: fix git safe.directory (needed when double-clicked from Explorer)
+    project_dir_fwd = project_root.replace("\\", "/")
+    run_local(f'git config --global --add safe.directory "{project_dir_fwd}"')
+
+    # Step 1: Git commit & push (full parity with the remote path)
+    step(1, total_steps, "Pushing local changes to GitHub")
+    ok, _ = run_local("git add -A")
+    if ok:
+        ok, out = run_local("git status --porcelain")
+        if out.strip():
+            ok, _ = run_local('git commit -m "Deploy update"')
+            if not ok:
+                error("Git commit failed")
+                errors.append("git commit")
+        else:
+            info("No changes to commit (working tree clean)")
+    ok, _ = run_local("git push origin master")
+    if ok:
+        success("Pushed to GitHub")
+    else:
+        error("Git push failed — do you have uncommitted changes or conflicts?")
+        errors.append("git push")
+
+    # Step 2: No remote sync — the local working tree is already the code we run.
+    step(2, total_steps, "Using local working tree (no remote sync needed)")
+    success(f"Deploying from {project_root}")
+
+    # Step 3: Install dependencies locally
+    step(3, total_steps, "Installing dependencies")
+    ok, _ = run_local("python -m pip install -r requirements.txt --quiet")
+    if ok:
+        success("Dependencies up to date")
+    else:
+        error("Local pip install failed — see messages above")
+        errors.append("pip install")
+
+    # Step 4: Optionally REBUILD ticket embeddings locally. There is no SCP or
+    # atomic swap in local mode: refresh_ticket_embeddings rebuilds the files in
+    # place (data\\vectors), which is exactly what the local server memory-maps.
+    step(4, total_steps, "Rebuilding ticket embeddings (optional)")
+    info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
+    info("A cold Databricks warehouse can take a few minutes to spin up — output streams below.")
+    run_local_streaming("python -u -m exploration.refresh_ticket_embeddings --status")
+    answer = prompt_yes_no(
+        "Rebuild ticket embeddings locally now? "
+        "This runs the incremental compute + export on THIS machine."
+    )
+    if answer:
+        kind, limit = prompt_ticket_limit()
+        if kind == "cancel":
+            info("Skipping embeddings rebuild (cancelled at scope prompt)")
+        else:
+            if kind == "limit":
+                info(f"Embedding scope: up to {limit:,} new ticket(s) this run.")
+            else:
+                info("Embedding scope: ALL new tickets.")
+            refresh_cmd = "python -u -m exploration.refresh_ticket_embeddings"
+            if kind == "limit":
+                refresh_cmd += f" --limit {int(limit)}"
+            try:
+                if run_local_streaming(refresh_cmd):
+                    success("Local embeddings rebuilt (server loads them on start)")
+                else:
+                    error("Local embeddings rebuild failed — see messages above")
+                    errors.append("embeddings rebuild")
+            except Exception as e:  # noqa: BLE001
+                error(f"Embeddings rebuild raised: {e}")
+                errors.append("embeddings rebuild")
+    else:
+        info("Skipping embeddings rebuild (using existing data\\vectors files)")
+
+    _deploy_local_start_and_verify(total_steps, errors, project_root)
+
+
+def _deploy_local_start_and_verify(total_steps, errors, project_root):
+    """Steps 5–8 of the local deploy: stop → (no swap) → start → verify + summary."""
+    # Step 5: Stop any local server already bound to :8000 so the new start can
+    # bind the port and the (no-longer-mmapped) embeddings file is released.
+    step(5, total_steps, "Stopping current local server")
+    stop_local_server()
+    success("Any existing local server on :8000 stopped")
+    time.sleep(2)
+
+    # Step 6: No embeddings to swap — nothing was transferred in local mode.
+    step(6, total_steps, "Applying new embeddings (atomic swap)")
+    info("No swap needed in local mode (embeddings rebuilt in place if at all)")
+
+    # Step 7: Start the server detached in a NEW console window so it survives
+    # after this script exits. Unlike the remote path we do NOT need schtasks:
+    # there is no SSH session whose close would kill the child. A visible window
+    # gives an obvious place to see logs and a simple way to stop (close it).
+    step(7, total_steps, "Starting local server (detached console window)")
+    if os.path.exists(LOCAL_RUN_SERVER_CMD):
+        try:
+            start_local_server()
+            success("Local server started in a new window")
+            info(f"Server log: {os.path.join(project_root, 'logs', 'server.log')}")
+        except Exception as e:  # noqa: BLE001
+            error(f"Could not start local server: {e}")
+            errors.append("server start")
+    else:
+        error(f"Launcher not found: {LOCAL_RUN_SERVER_CMD}")
+        errors.append("server start")
+
+    # Step 8: Verify by polling the local health endpoint.
+    step(8, total_steps, "Verifying server is responding")
+    healthy, last_err = poll_health(LOCAL_SERVER_URL)
+    if healthy:
+        success(f"Server is UP — {LOCAL_SERVER_URL} returned 200")
+    else:
+        error(f"Server did not become healthy within {HEALTH_TIMEOUT_SECONDS}s "
+              f"(last error: {last_err})")
+        errors.append("health check")
+        server_log = os.path.join(project_root, "logs", "server.log")
+        info("Last lines of server log:")
+        if os.path.exists(server_log):
+            try:
+                with open(server_log, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f.readlines()[-20:]:
+                        print(f"    {line.rstrip()}")
+            except OSError as e:
+                info(f"(could not read server log: {e})")
+        else:
+            info("No server.log found")
+
+    # Summary
+    print(f"\n{'═' * 60}")
+    if not errors:
+        print(f"{Colors.GREEN}{Colors.BOLD}  ✓ LOCAL DEPLOY SUCCESSFUL{Colors.RESET}")
+        print(f"    Application: {LOCAL_APP_URL}")
+        print(f"    Web UI:      {LOCAL_APP_URL}/ui/")
+    else:
+        print(f"{Colors.RED}{Colors.BOLD}  ✗ LOCAL DEPLOY COMPLETED WITH ERRORS{Colors.RESET}")
         print(f"    Issues: {', '.join(errors)}")
     print(f"{'═' * 60}\n")
 

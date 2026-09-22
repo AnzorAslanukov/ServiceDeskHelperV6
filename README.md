@@ -110,6 +110,23 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 The web UI will be available at `http://localhost:8000/ui/`.
 
+### Deploying (`deploy.py`)
+
+Running `deploy.py` (double-click or `python deploy.py`) first asks **one**
+question:
+
+> Deploy to the LOCAL machine instead of the remote server? `[y/N]`
+
+- **No** (default) — the original remote deploy: git push → SSH the workstation
+  to pull, install deps, (optionally) transfer & swap embeddings, then restart
+  and health-check `http://10.192.46.182:8000`.
+- **Yes** — a **local** deploy for when the remote workstation is unavailable.
+  It runs the same steps against this machine with no SSH/SCP: git push, local
+  `pip install`, an optional local embeddings rebuild (no transfer/swap needed),
+  stop anything on port 8000, then start the server **detached in a new console
+  window** (`deploy/run_server_local.cmd`) and verify
+  `http://localhost:8000/health`. Close that window to stop the local server.
+
 ### Running Tests
 
 ```bash

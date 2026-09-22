@@ -58,3 +58,5 @@ cookies.txt
 
 # Bug report storage (user-submitted reports; not source)
 data/bug_reports/
+
+misc/
