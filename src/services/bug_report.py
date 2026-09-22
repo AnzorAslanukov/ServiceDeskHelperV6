@@ -15,13 +15,17 @@ for filing real Athena tickets later is a single-class change.
 import hashlib
 import hmac
 import logging
+import re
+import shutil
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from src.models.bug_report import (
     VALID_STATUSES,
+    Attachment,
     BugReport,
     BugReportRequest,
 )
@@ -33,6 +37,38 @@ _DEFAULT_STORAGE = (
     Path(__file__).resolve().parent.parent.parent / "data" / "bug_reports" / "reports.jsonl"
 )
 
+# Magic-byte signatures used to sniff real file content (defeats extension /
+# declared-MIME spoofing). Maps a leading byte-prefix to a canonical MIME type.
+# Only a representative prefix is checked; text formats (txt/log/csv) have no
+# reliable signature and are validated by extension only.
+_MAGIC_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+    (b"%PDF-", "application/pdf"),
+)
+
+# Extensions that carry no reliable magic bytes; accepted on extension alone.
+_TEXT_EXTENSIONS = frozenset({"txt", "log", "csv"})
+
+
+class AttachmentValidationError(ValueError):
+    """Raised when an uploaded attachment violates count/size/type limits."""
+
+
+def _sanitize_filename(name: str) -> str:
+    """Strip directories and unsafe characters from an uploaded filename.
+
+    Prevents path traversal (``../``) and control characters. Falls back to a
+    generic name if nothing usable remains.
+    """
+    # Keep only the final path component, drop any directory parts.
+    base = Path(name or "").name
+    # Allow letters, digits, dot, dash, underscore, space; replace the rest.
+    base = re.sub(r"[^A-Za-z0-9._\- ]", "_", base).strip()
+    return base or "attachment"
+
 
 class BugReportService:
     """Captures, persists, and manages user-submitted bug reports."""
@@ -43,31 +79,65 @@ class BugReportService:
         admin_password: str = "",
         admin_secret: str = "",
         admin_unlock_hours: float = 8.0,
+        max_files: int = 5,
+        max_file_mb: float = 10.0,
+        max_total_mb: float = 25.0,
+        allowed_extensions: list[str] | None = None,
     ) -> None:
         self._storage_path = Path(storage_path) if storage_path else _DEFAULT_STORAGE
         self._admin_password = admin_password
         self._admin_secret = admin_secret or "bug-report-admin-secret"
         self._admin_unlock_seconds = admin_unlock_hours * 3600
+        # Attachment limits.
+        self._max_files = max_files
+        self._max_file_bytes = int(max_file_mb * 1024 * 1024)
+        self._max_total_bytes = int(max_total_mb * 1024 * 1024)
+        self._allowed_extensions = frozenset(
+            (allowed_extensions or ["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "log", "csv", "mp4", "webm"])
+        )
+        # Attachments live alongside the JSONL, one directory per report.
+        self._attachments_dir = self._storage_path.parent / "attachments"
         # Guards concurrent reads/writes to the JSONL file (multi-user app).
         self._lock = threading.Lock()
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ── Submission ────────────────────────────────────────────────────
 
-    def submit(self, request: BugReportRequest, reported_by: str) -> BugReport:
-        """Persist a new bug report and return the stored record."""
+    def submit(
+        self,
+        request: BugReportRequest,
+        reported_by: str,
+        uploads: list[tuple[str, str, bytes]] | None = None,
+    ) -> BugReport:
+        """Persist a new bug report and return the stored record.
+
+        ``uploads`` is an optional list of ``(filename, content_type, data)``
+        tuples. When present, they are validated and written to disk under the
+        new report's id before the record is appended, so the JSONL row is
+        written exactly once (preserving append-only semantics).
+
+        Raises ``AttachmentValidationError`` if any upload violates the limits.
+        """
         with self._lock:
             next_num = self._next_id_number_unlocked()
+            report_id = f"BUG-{next_num}"
+            attachments = self._save_attachments_unlocked(report_id, uploads or [])
             report = BugReport(
-                id=f"BUG-{next_num}",
+                id=report_id,
                 reported_by=reported_by or "unknown",
                 reported_at=datetime.now(timezone.utc),
                 status="open",
+                attachments=attachments,
                 **request.model_dump(),
             )
             with self._storage_path.open("a", encoding="utf-8") as fh:
                 fh.write(report.model_dump_json() + "\n")
-        logger.info("Bug report %s submitted by %s", report.id, report.reported_by)
+        logger.info(
+            "Bug report %s submitted by %s (%d attachment(s))",
+            report.id,
+            report.reported_by,
+            len(report.attachments),
+        )
         return report
 
     # ── Retrieval ─────────────────────────────────────────────────────
@@ -121,15 +191,148 @@ class BugReportService:
         return updated
 
     def delete_report(self, report_id: str) -> bool:
-        """Remove a report by id. Returns True if a report was deleted."""
+        """Remove a report by id (and its attachments). Returns True if deleted."""
         with self._lock:
             reports = self._read_all_unlocked()
             remaining = [r for r in reports if r.id != report_id]
             if len(remaining) == len(reports):
                 return False
             self._rewrite_unlocked(remaining)
+            # Remove the report's attachment directory, if any.
+            report_dir = self._attachments_dir / report_id
+            if report_dir.exists():
+                shutil.rmtree(report_dir, ignore_errors=True)
         logger.info("Bug report %s deleted", report_id)
         return True
+
+    # ── Attachments ───────────────────────────────────────────────────
+
+    def get_attachment_path(self, report_id: str, attachment_id: str) -> Path | None:
+        """Return the on-disk path for an attachment, or None if not found.
+
+        Looks the attachment up in the report's metadata (so only files this
+        service wrote are ever served) and verifies the resolved path stays
+        inside the report's attachment directory (defense-in-depth).
+        """
+        report = self.get_report(report_id)
+        if report is None:
+            return None
+        for att in report.attachments:
+            if att.id == attachment_id:
+                report_dir = (self._attachments_dir / report_id).resolve()
+                candidate = (report_dir / att.stored_filename).resolve()
+                if report_dir not in candidate.parents:
+                    return None
+                return candidate if candidate.exists() else None
+        return None
+
+    def _save_attachments_unlocked(
+        self,
+        report_id: str,
+        uploads: list[tuple[str, str, bytes]],
+    ) -> list[Attachment]:
+        """Validate and persist uploads for ``report_id`` (caller holds lock).
+
+        Enforces max-file-count, per-file size, total size, and an extension +
+        magic-byte allow-list. Writes files under ``attachments/{report_id}/``
+        with uuid-prefixed names. Returns the attachment metadata list.
+        """
+        if not uploads:
+            return []
+        if len(uploads) > self._max_files:
+            raise AttachmentValidationError(
+                f"Too many files: {len(uploads)}. Maximum is {self._max_files}."
+            )
+
+        total = 0
+        prepared: list[tuple[str, str, bytes, str]] = []
+        for filename, declared_type, data in uploads:
+            safe_name = _sanitize_filename(filename)
+            ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else ""
+            size = len(data)
+            total += size
+
+            if not ext or ext not in self._allowed_extensions:
+                raise AttachmentValidationError(
+                    f"File type '.{ext or '?'}' is not allowed for '{safe_name}'. "
+                    f"Allowed: {', '.join(sorted(self._allowed_extensions))}."
+                )
+            if size == 0:
+                raise AttachmentValidationError(f"File '{safe_name}' is empty.")
+            if size > self._max_file_bytes:
+                mb = self._max_file_bytes / (1024 * 1024)
+                raise AttachmentValidationError(
+                    f"File '{safe_name}' is too large ({size / (1024 * 1024):.1f} MB). "
+                    f"Maximum per file is {mb:.0f} MB."
+                )
+
+            content_type = self._verify_content(safe_name, ext, declared_type, data)
+            prepared.append((safe_name, content_type, data, ext))
+
+        if total > self._max_total_bytes:
+            mb = self._max_total_bytes / (1024 * 1024)
+            raise AttachmentValidationError(
+                f"Attachments total too large ({total / (1024 * 1024):.1f} MB). "
+                f"Maximum is {mb:.0f} MB per report."
+            )
+
+        report_dir = self._attachments_dir / report_id
+        report_dir.mkdir(parents=True, exist_ok=True)
+        saved: list[Attachment] = []
+        for safe_name, content_type, data, _ext in prepared:
+            att_id = uuid.uuid4().hex
+            stored_filename = f"{att_id}__{safe_name}"
+            (report_dir / stored_filename).write_bytes(data)
+            saved.append(
+                Attachment(
+                    id=att_id,
+                    original_filename=safe_name,
+                    stored_filename=stored_filename,
+                    content_type=content_type,
+                    size_bytes=len(data),
+                )
+            )
+        return saved
+
+    def _verify_content(
+        self,
+        filename: str,
+        ext: str,
+        declared_type: str,
+        data: bytes,
+    ) -> str:
+        """Confirm the bytes match the extension via magic-byte sniffing.
+
+        Text formats (txt/log/csv) and formats without a checked signature
+        (webp/mp4/webm) fall back to the declared MIME type. Raises if a
+        signature is present but disagrees with the extension.
+        """
+        header = data[:16]
+        detected: str | None = None
+        for prefix, mime in _MAGIC_SIGNATURES:
+            if header.startswith(prefix):
+                detected = mime
+                break
+
+        if detected is not None:
+            # A recognized signature must be consistent with the extension.
+            ext_to_mime = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "gif": "image/gif",
+                "pdf": "application/pdf",
+            }
+            expected = ext_to_mime.get(ext)
+            if expected is not None and detected != expected:
+                raise AttachmentValidationError(
+                    f"File '{filename}' content does not match its .{ext} extension."
+                )
+            return detected
+
+        if ext in _TEXT_EXTENSIONS:
+            return declared_type or "text/plain"
+        return declared_type or "application/octet-stream"
 
     # ── Admin Authentication ──────────────────────────────────────────
 

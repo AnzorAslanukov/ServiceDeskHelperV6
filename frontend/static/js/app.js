@@ -32,6 +32,58 @@ function captureBugContext(form) {
     } catch (e) {
         // Non-fatal — submit proceeds even if context capture fails.
     }
+    // Block submission if the chosen files violate the limits (the server
+    // re-validates, this is just fast feedback).
+    var fileInput = form.querySelector('input[type="file"][name="files"]');
+    if (fileInput && !validateBugFiles(fileInput)) {
+        return false;
+    }
+    return true;
+}
+
+// Client-side pre-check of chosen files (count / per-file size / total size /
+// extension). Returns true if valid. The server is always the authority.
+function validateBugFiles(input) {
+    var errorBox = document.querySelector('.bug-report-file-error');
+    var showError = function (msg) {
+        if (errorBox) {
+            errorBox.textContent = msg;
+            errorBox.style.display = msg ? '' : 'none';
+        }
+        return !msg;
+    };
+
+    var files = input.files;
+    if (!files || files.length === 0) return showError('');
+
+    var maxFiles = parseInt(input.getAttribute('data-max-files'), 10) || 5;
+    var maxFileMb = parseFloat(input.getAttribute('data-max-file-mb')) || 10;
+    var maxTotalMb = parseFloat(input.getAttribute('data-max-total-mb')) || 25;
+    var accept = (input.getAttribute('accept') || '')
+        .split(',')
+        .map(function (s) { return s.trim().replace(/^\./, '').toLowerCase(); })
+        .filter(Boolean);
+
+    if (files.length > maxFiles) {
+        return showError('Too many files: ' + files.length + '. Maximum is ' + maxFiles + '.');
+    }
+
+    var total = 0;
+    for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        total += f.size;
+        var ext = f.name.indexOf('.') >= 0 ? f.name.split('.').pop().toLowerCase() : '';
+        if (accept.length && accept.indexOf(ext) === -1) {
+            return showError("File type '." + (ext || '?') + "' is not allowed (" + f.name + ').');
+        }
+        if (f.size > maxFileMb * 1024 * 1024) {
+            return showError("'" + f.name + "' is too large. Maximum per file is " + maxFileMb + ' MB.');
+        }
+    }
+    if (total > maxTotalMb * 1024 * 1024) {
+        return showError('Attachments total too large. Maximum is ' + maxTotalMb + ' MB.');
+    }
+    return showError('');
 }
 
 // After a submit result is shown, let the user file another report by

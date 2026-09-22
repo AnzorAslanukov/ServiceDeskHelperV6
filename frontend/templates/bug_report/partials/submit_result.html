@@ -7,7 +7,8 @@
 {% else %}
 <div class="alert alert-success">
     <span>✅</span>
-    <span>Thanks! Your report was filed as <strong>{{ report_id }}</strong>.</span>
+    <span>Thanks! Your report was filed as <strong>{{ report_id }}</strong>{% if attachment_count %}
+        with {{ attachment_count }} attachment{{ '' if attachment_count == 1 else 's' }}{% endif %}.</span>
 </div>
 <div class="d-flex justify-between align-center">
     <span class="bug-report-hint">The team will review it.</span>

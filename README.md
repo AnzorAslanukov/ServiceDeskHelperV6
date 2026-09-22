@@ -157,6 +157,7 @@ python cli.py turnover --sender "John Smith" --receiver "Jane Doe"
 
 # Bug reports
 python cli.py bug report -s "Search times out" -d "Title 'contains' hangs" --severity high
+python cli.py bug report -s "Layout broken" -d "See screenshots" --attach shot1.png --attach console.log
 python cli.py bug list --status open
 python cli.py bug status BUG-1 resolved
 ```
@@ -178,10 +179,11 @@ See [CLI_README.md](CLI_README.md) for full CLI documentation.
 | POST | `/assignment/{ticket_id}` | Get assignment recommendation |
 | POST | `/turnover/generate` | Generate turnover email draft |
 | WS | `/bulk/ws/{user_id}` | Bulk assignment WebSocket |
-| POST | `/bug-report` | Submit a bug report (any authenticated user) |
+| POST | `/bug-report` | Submit a bug report with optional file attachments (multipart; any authenticated user) |
 | GET | `/bug-report` | List bug reports (admin only) |
+| GET | `/bug-report/{id}/attachments/{attachment_id}` | Download a report attachment (admin only) |
 | PATCH | `/bug-report/{id}/status` | Update a report's status (admin only) |
-| DELETE | `/bug-report/{id}` | Delete a report (admin only) |
+| DELETE | `/bug-report/{id}` | Delete a report and its attachments (admin only) |
 | GET | `/ui/bug-report/admin` | Password-protected admin page (view/manage reports) |
 
 ## ML Model

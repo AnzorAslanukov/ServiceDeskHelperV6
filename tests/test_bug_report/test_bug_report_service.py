@@ -12,7 +12,9 @@ import pytest
 from pydantic import ValidationError
 
 from src.models.bug_report import BugReport, BugReportRequest
-from src.services.bug_report import BugReportService
+from src.services.bug_report import AttachmentValidationError, BugReportService
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
 @pytest.fixture
@@ -141,6 +143,101 @@ def test_summary_too_short_rejected():
 def test_invalid_severity_rejected():
     with pytest.raises(ValidationError):
         BugReportRequest(summary="valid", description="valid", severity="nope")
+
+
+# ── Attachments ──────────────────────────────────────────────────────
+
+
+def test_submit_saves_attachment(service, tmp_path):
+    report = service.submit(
+        _req(), reported_by="a", uploads=[("shot.png", "image/png", _PNG)]
+    )
+    assert len(report.attachments) == 1
+    att = report.attachments[0]
+    assert att.original_filename == "shot.png"
+    assert att.content_type == "image/png"
+    # File is on disk under the report's attachment directory.
+    stored = tmp_path / "attachments" / report.id / att.stored_filename
+    assert stored.exists()
+    assert stored.read_bytes() == _PNG
+
+
+def test_attachment_metadata_persists(service):
+    report = service.submit(
+        _req(), reported_by="a", uploads=[("shot.png", "image/png", _PNG)]
+    )
+    reloaded = service.get_report(report.id)
+    assert len(reloaded.attachments) == 1
+    assert reloaded.attachments[0].id == report.attachments[0].id
+
+
+def test_too_many_files_rejected(service):
+    uploads = [(f"shot{i}.png", "image/png", _PNG) for i in range(6)]
+    with pytest.raises(AttachmentValidationError):
+        service.submit(_req(), reported_by="a", uploads=uploads)
+
+
+def test_oversized_file_rejected(tmp_path):
+    svc = BugReportService(storage_path=tmp_path / "r.jsonl", max_file_mb=0.001)
+    big = b"\x89PNG\r\n\x1a\n" + b"\x00" * 5000
+    with pytest.raises(AttachmentValidationError):
+        svc.submit(_req(), reported_by="a", uploads=[("big.png", "image/png", big)])
+
+
+def test_total_size_rejected(tmp_path):
+    svc = BugReportService(
+        storage_path=tmp_path / "r.jsonl", max_file_mb=10, max_total_mb=0.004
+    )
+    payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 3000
+    uploads = [(f"s{i}.png", "image/png", payload) for i in range(3)]
+    with pytest.raises(AttachmentValidationError):
+        svc.submit(_req(), reported_by="a", uploads=uploads)
+
+
+def test_disallowed_extension_rejected(service):
+    with pytest.raises(AttachmentValidationError):
+        service.submit(
+            _req(), reported_by="a", uploads=[("evil.exe", "application/octet-stream", b"MZ")]
+        )
+
+
+def test_spoofed_content_rejected(service):
+    # A PDF signature saved under a .png extension must be rejected.
+    fake_png = b"%PDF-1.4 not really a png"
+    with pytest.raises(AttachmentValidationError):
+        service.submit(_req(), reported_by="a", uploads=[("shot.png", "image/png", fake_png)])
+
+
+def test_path_traversal_filename_sanitized(service, tmp_path):
+    report = service.submit(
+        _req(), reported_by="a", uploads=[("../../evil.png", "image/png", _PNG)]
+    )
+    att = report.attachments[0]
+    assert ".." not in att.stored_filename
+    assert "/" not in att.stored_filename and "\\" not in att.stored_filename
+    # File landed inside the report's own directory.
+    stored = tmp_path / "attachments" / report.id / att.stored_filename
+    assert stored.exists()
+
+
+def test_get_attachment_path(service):
+    report = service.submit(
+        _req(), reported_by="a", uploads=[("shot.png", "image/png", _PNG)]
+    )
+    path = service.get_attachment_path(report.id, report.attachments[0].id)
+    assert path is not None and path.exists()
+    assert service.get_attachment_path(report.id, "nope") is None
+    assert service.get_attachment_path("BUG-999", "x") is None
+
+
+def test_delete_removes_attachments(service, tmp_path):
+    report = service.submit(
+        _req(), reported_by="a", uploads=[("shot.png", "image/png", _PNG)]
+    )
+    report_dir = tmp_path / "attachments" / report.id
+    assert report_dir.exists()
+    service.delete_report(report.id)
+    assert not report_dir.exists()
 
 
 # ── Admin Authentication ─────────────────────────────────────────────

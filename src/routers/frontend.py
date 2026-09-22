@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Form, Request, Response
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from src.config import get_settings
 from src.dependencies import (
     get_assignment_service,
     get_athena_client,
@@ -31,7 +32,7 @@ from src.dependencies import (
 from src.models.bug_report import BugReportRequest
 from src.routers.bug_report import ADMIN_COOKIE
 from src.services.assignment import AssignmentService, LOCATION_GUID_TO_FULLNAME
-from src.services.bug_report import BugReportService
+from src.services.bug_report import AttachmentValidationError, BugReportService
 from src.services.chatbot import ChatbotService
 from src.services.ticket_search import TicketSearchService
 
@@ -42,6 +43,22 @@ router = APIRouter(prefix="/ui", tags=["frontend"])
 # Templates directory
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# Expose bug-report attachment limits to every template (the widget is included
+# on all pages via base.html), so the file input can render the correct hint,
+# accept-list, and client-side checks without threading context through every
+# page route.
+_bug_settings = get_settings()
+_bug_allowed_exts = [
+    e.strip().lower()
+    for e in _bug_settings.bug_report_allowed_extensions.split(",")
+    if e.strip()
+]
+templates.env.globals["bug_max_files"] = _bug_settings.bug_report_max_files
+templates.env.globals["bug_max_file_mb"] = _bug_settings.bug_report_max_file_mb
+templates.env.globals["bug_max_total_mb"] = _bug_settings.bug_report_max_total_mb
+templates.env.globals["bug_allowed_exts"] = _bug_allowed_exts
+templates.env.globals["bug_accept_attr"] = ",".join(f".{e}" for e in _bug_allowed_exts)
 
 
 # Operators that trigger a slow server-side substring scan on free-text fields.
@@ -581,6 +598,7 @@ async def bug_report_submit_partial(
     feature: str = Form(""),
     page_url: str = Form(""),
     user_agent: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
     service: BugReportService = Depends(get_bug_report_service),
 ):
     """HTMX partial: submit a bug report from the always-visible widget."""
@@ -600,13 +618,30 @@ async def bug_report_submit_partial(
             {"error": "Please provide a short summary and a description (3+ characters each)."},
         )
 
+    # Read any attached files, then hand off to the service for validation.
+    uploads: list[tuple[str, str, bytes]] = []
+    for f in files:
+        if not f or not f.filename:
+            continue
+        data = await f.read()
+        if data:
+            uploads.append((f.filename, f.content_type or "", data))
+
     user = get_current_user(request)
     reported_by = user.username if user else "unknown"
-    report = service.submit(payload, reported_by=reported_by)
+    try:
+        report = service.submit(payload, reported_by=reported_by, uploads=uploads)
+    except AttachmentValidationError as exc:
+        return templates.TemplateResponse(
+            request,
+            "bug_report/partials/submit_result.html",
+            {"error": str(exc)},
+            status_code=400,
+        )
     return templates.TemplateResponse(
         request,
         "bug_report/partials/submit_result.html",
-        {"report_id": report.id},
+        {"report_id": report.id, "attachment_count": len(report.attachments)},
     )
 
 

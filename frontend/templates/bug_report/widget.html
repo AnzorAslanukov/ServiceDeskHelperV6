@@ -16,7 +16,8 @@
             <form hx-post="/ui/bug-report"
                   hx-target="#bug-report-body"
                   hx-swap="innerHTML"
-                  onsubmit="captureBugContext(this)">
+                  hx-encoding="multipart/form-data"
+                  onsubmit="return captureBugContext(this)">
                 <input type="hidden" name="page_url" value="">
                 <input type="hidden" name="user_agent" value="">
                 <input type="hidden" name="feature" value="">
@@ -42,6 +43,22 @@
                         <option value="high">High — feature unusable</option>
                         <option value="blocker">Blocker — app unusable</option>
                     </select>
+                </div>
+
+                <div class="form-group mb-1">
+                    <label class="form-label">Attachments <span class="bug-report-hint">(optional)</span></label>
+                    <input type="file" name="files" class="form-input bug-report-file"
+                           multiple accept="{{ bug_accept_attr }}"
+                           data-max-files="{{ bug_max_files }}"
+                           data-max-file-mb="{{ bug_max_file_mb }}"
+                           data-max-total-mb="{{ bug_max_total_mb }}"
+                           onchange="validateBugFiles(this)">
+                    <div class="bug-report-hint bug-report-file-hint">
+                        Up to {{ bug_max_files }} files, {{ bug_max_file_mb | int }} MB each
+                        ({{ bug_max_total_mb | int }} MB total).
+                        Allowed: {{ bug_allowed_exts | join(', ') }}.
+                    </div>
+                    <div class="alert alert-error bug-report-file-error" style="display:none;"></div>
                 </div>
 
                 <div class="d-flex justify-between align-center">

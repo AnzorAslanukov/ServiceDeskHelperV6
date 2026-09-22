@@ -20,6 +20,19 @@
     <div class="bug-card-summary">{{ report.summary }}</div>
     <div class="bug-card-desc">{{ report.description }}</div>
 
+    {% if report.attachments %}
+    <div class="bug-card-attachments">
+        <span class="bug-card-attachments-label">📎 Attachments:</span>
+        {% for att in report.attachments %}
+        <a class="bug-attachment-link"
+           href="/bug-report/{{ report.id }}/attachments/{{ att.id }}"
+           title="{{ att.original_filename }} ({{ (att.size_bytes / 1024) | round(1) }} KB)">
+            {{ att.original_filename }}
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
     <div class="bug-card-meta">
         <span>👤 {{ report.reported_by }}</span>
         <span>🕒 {{ report.reported_at }}</span>

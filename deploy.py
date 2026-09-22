@@ -18,10 +18,13 @@ Steps performed (REMOTE mode):
   1. Git push local changes to GitHub
   2. SSH to workstation → git pull
   3. Install any new dependencies
-  4. (Optional) Update ticket embeddings on the server — prompted; the ~3.1 GB
-     file is rebuilt locally and TRANSFERRED via SCP (never GitHub) to *.tmp
-     paths. A live transfer progress bar is shown. The atomic swap is DEFERRED
-     to step 6 (after the server is stopped) — see note below.
+  4. (Optional) Update ticket embeddings on the server — a GATE prompt asks up
+     front whether to touch embeddings at all; answering NO does a code-only
+     deploy and SKIPS the multi-minute "how many tickets to embed" scan. If YES,
+     the scan runs (for an informed count/estimate) and a second prompt confirms.
+     The ~3.1 GB file is then rebuilt locally and TRANSFERRED via SCP (never
+     GitHub) to *.tmp paths. A live transfer progress bar is shown. The atomic
+     swap is DEFERRED to step 6 (after the server is stopped) — see note below.
   5. Stop the running server
   6. Apply the transferred embeddings: atomically swap the *.tmp files into
      place. This happens WHILE THE SERVER IS DOWN on purpose: the running
@@ -854,16 +857,28 @@ def deploy_remote():
     # deferred to step 6 (after the server is stopped) so Windows will let us
     # replace the no-longer-mmapped live .npy.
     step(4, total_steps, "Updating ticket embeddings (optional)")
-    # Show how many tickets need vectorizing + a time estimate BEFORE asking,
-    # so the y/N decision is informed. Read-only; safe to skip on error.
-    info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
-    info("A cold Databricks warehouse can take a few minutes to spin up — output streams below.")
-    # -u => unbuffered child stdout so the streamed lines appear immediately.
-    run_local_streaming("python -u -m exploration.refresh_ticket_embeddings --status")
-    answer = prompt_yes_no(
-        "Update ticket embeddings on the server? "
-        "This rebuilds locally and transfers ~3 GB via SCP."
+    # GATE (before the slow scan): the --status check below can take a few
+    # minutes (it spins up a cold Databricks warehouse). Ask up front whether the
+    # operator even wants to touch embeddings this deploy, so a code-only deploy
+    # can skip the scan entirely instead of always paying that cost.
+    want_embeddings = prompt_yes_no(
+        "Update the ticket vector database this deploy? "
+        "Answering NO does a code-only deploy and SKIPS the multi-minute scan."
     )
+    if not want_embeddings:
+        info("Skipping embeddings update (code-only deploy — scan skipped)")
+        answer = False
+    else:
+        # Show how many tickets need vectorizing + a time estimate BEFORE the
+        # final confirm, so the y/N decision is informed. Read-only; safe on error.
+        info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
+        info("A cold Databricks warehouse can take a few minutes to spin up — output streams below.")
+        # -u => unbuffered child stdout so the streamed lines appear immediately.
+        run_local_streaming("python -u -m exploration.refresh_ticket_embeddings --status")
+        answer = prompt_yes_no(
+            "Update ticket embeddings on the server? "
+            "This rebuilds locally and transfers ~3 GB via SCP."
+        )
     if answer:
         # Ask HOW MANY new tickets to embed this run — the full backlog can take
         # many hours, so allow capping to a number (then finalize) or cancelling.
@@ -999,8 +1014,10 @@ def deploy_local():
       1. Git commit & push (same as remote — keeps GitHub in sync).
       2. (No remote git reset — the local working tree IS the code we run.)
       3. Local pip install of requirements.
-      4. Optionally REBUILD embeddings locally (no transfer/swap — the rebuilt
-         files land straight in data\\vectors, which the local server loads).
+      4. Optionally REBUILD embeddings locally — a GATE prompt asks first so a
+         code-only deploy SKIPS the multi-minute scan; if YES, the scan runs then
+         a second prompt confirms (no transfer/swap — the rebuilt files land
+         straight in data\\vectors, which the local server loads).
       5. Stop any server already listening on :8000 locally.
       6. (No atomic swap — nothing was transferred.)
       7. Start the server detached in a new console window (run_server_local.cmd).
@@ -1052,13 +1069,24 @@ def deploy_local():
     # atomic swap in local mode: refresh_ticket_embeddings rebuilds the files in
     # place (data\\vectors), which is exactly what the local server memory-maps.
     step(4, total_steps, "Rebuilding ticket embeddings (optional)")
-    info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
-    info("A cold Databricks warehouse can take a few minutes to spin up — output streams below.")
-    run_local_streaming("python -u -m exploration.refresh_ticket_embeddings --status")
-    answer = prompt_yes_no(
-        "Rebuild ticket embeddings locally now? "
-        "This runs the incremental compute + export on THIS machine."
+    # GATE (before the slow scan): the --status check below can take a few
+    # minutes (cold Databricks warehouse). Ask up front so a code-only local
+    # deploy can skip the scan entirely instead of always paying that cost.
+    want_embeddings = prompt_yes_no(
+        "Update the ticket vector database this deploy? "
+        "Answering NO uses the existing files and SKIPS the multi-minute scan."
     )
+    if not want_embeddings:
+        info("Skipping embeddings rebuild (using existing data\\vectors files — scan skipped)")
+        answer = False
+    else:
+        info("Checking how many tickets need vectorizing (this makes 1 sample API call)...")
+        info("A cold Databricks warehouse can take a few minutes to spin up — output streams below.")
+        run_local_streaming("python -u -m exploration.refresh_ticket_embeddings --status")
+        answer = prompt_yes_no(
+            "Rebuild ticket embeddings locally now? "
+            "This runs the incremental compute + export on THIS machine."
+        )
     if answer:
         kind, limit = prompt_ticket_limit()
         if kind == "cancel":

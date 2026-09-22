@@ -2899,6 +2899,56 @@ th[data-sortable][data-sort-dir="desc"] .sort-indicator {
     font-size: 0.88rem;
     font-weight: 600;
     color: var(--text-primary);
+
+/* ── Bug Report Attachments ─────────────────────────────────────────── */
+
+.bug-report-file {
+    padding: 6px;
+    font-size: 0.82rem;
+}
+
+.bug-report-file-hint {
+    margin-top: 4px;
+    line-height: 1.35;
+}
+
+.bug-report-file-error {
+    margin-top: 6px;
+    font-size: 0.82rem;
+}
+
+.bug-card-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    font-size: 0.82rem;
+}
+
+.bug-card-attachments-label {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.bug-attachment-link {
+    display: inline-block;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--accent-color, #1a6bb8);
+    text-decoration: none;
+}
+
+.bug-attachment-link:hover {
+    text-decoration: underline;
+}
+
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

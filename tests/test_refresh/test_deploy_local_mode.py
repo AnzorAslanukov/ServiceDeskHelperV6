@@ -120,3 +120,51 @@ def test_stop_local_server_noop_when_nothing_on_port(monkeypatch):
     monkeypatch.setattr(deploy, "run_local", lambda cmd: killed.append(cmd))
     deploy.stop_local_server()
     assert killed == []
+
+
+# ── Step 4 gate: the slow --status scan must be gated by the up-front y/N ──
+
+def _stub_deploy_local_io(monkeypatch, streamed):
+    """
+    Stub every I/O boundary deploy_local() touches so it can run in a test,
+    recording each run_local_streaming command into ``streamed``. Returns nothing;
+    callers set prompt_yes_no separately to drive the gate.
+    """
+    monkeypatch.setattr(deploy, "step", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "info", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "success", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "error", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "run_local", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(
+        deploy, "run_local_streaming",
+        lambda cmd, *a, **k: (streamed.append(cmd), True)[1],
+    )
+    # Neutralize the start/verify tail so no process/HTTP work happens.
+    monkeypatch.setattr(deploy, "_deploy_local_start_and_verify", lambda *a, **k: None)
+
+
+def test_local_gate_no_skips_the_status_scan(monkeypatch):
+    streamed = []
+    _stub_deploy_local_io(monkeypatch, streamed)
+    # Gate answers NO (the only prompt_yes_no reached in this path).
+    monkeypatch.setattr(deploy, "prompt_yes_no", lambda *a, **k: False)
+    # If the scope prompt were ever reached it would be a bug; make it explode.
+    monkeypatch.setattr(
+        deploy, "prompt_ticket_limit",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("scope prompt reached")),
+    )
+    deploy.deploy_local()
+    # The multi-minute --status scan must NOT have been run.
+    assert not any("--status" in c for c in streamed)
+
+
+def test_local_gate_yes_runs_the_status_scan(monkeypatch):
+    streamed = []
+    _stub_deploy_local_io(monkeypatch, streamed)
+    # First prompt_yes_no (the gate) = YES, second (the confirm) = NO so we stop
+    # before the scope prompt / actual rebuild.
+    answers = iter([True, False])
+    monkeypatch.setattr(deploy, "prompt_yes_no", lambda *a, **k: next(answers))
+    deploy.deploy_local()
+    # The scan runs exactly once now that the gate said YES.
+    assert sum(1 for c in streamed if "--status" in c) == 1

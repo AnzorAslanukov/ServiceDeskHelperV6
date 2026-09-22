@@ -50,6 +50,14 @@ def get_bug_report_service() -> BugReportService:
         admin_password=settings.bug_report_admin_password,
         admin_secret=settings.session_secret_key,
         admin_unlock_hours=settings.bug_report_admin_unlock_hours,
+        max_files=settings.bug_report_max_files,
+        max_file_mb=settings.bug_report_max_file_mb,
+        max_total_mb=settings.bug_report_max_total_mb,
+        allowed_extensions=[
+            e.strip().lower()
+            for e in settings.bug_report_allowed_extensions.split(",")
+            if e.strip()
+        ],
     )
 
 

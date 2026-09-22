@@ -62,6 +62,24 @@ class BugReportRequest(BaseModel):
 # ── Persisted / Response Models ───────────────────────────────────────
 
 
+class Attachment(BaseModel):
+    """Metadata for a single file attached to a bug report.
+
+    The file bytes live on disk under ``data/bug_reports/attachments/{id}/``;
+    only this metadata is persisted inline in the JSONL record.
+    """
+
+    id: str = Field(description="Server-generated unique id (uuid4 hex).")
+    original_filename: str = Field(
+        description="Sanitized original filename, kept for display/download."
+    )
+    stored_filename: str = Field(
+        description="Actual on-disk filename (uuid-prefixed, collision-safe)."
+    )
+    content_type: str = Field(description="Detected/declared MIME type.")
+    size_bytes: int = Field(description="File size in bytes.")
+
+
 class BugReport(BugReportRequest):
     """A persisted bug report with server-assigned metadata."""
 
@@ -69,6 +87,10 @@ class BugReport(BugReportRequest):
     reported_by: str = Field(description="Username of the reporter.")
     reported_at: datetime = Field(description="UTC timestamp when submitted.")
     status: BugStatus = Field(default="open", description="Lifecycle status.")
+    attachments: list[Attachment] = Field(
+        default_factory=list,
+        description="Files attached to this report (metadata only).",
+    )
 
 
 class BugReportResponse(BaseModel):

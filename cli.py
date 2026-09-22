@@ -550,6 +550,9 @@ async def cmd_turnover(args) -> None:
 
 async def cmd_bug_report(args) -> None:
     """Submit a new bug report from the CLI."""
+    import mimetypes
+    from pathlib import Path
+
     service = get_bug_report_service()
     payload = BugReportRequest(
         summary=args.summary,
@@ -557,7 +560,17 @@ async def cmd_bug_report(args) -> None:
         severity=args.severity,
         feature=args.feature or "",
     )
-    report = service.submit(payload, reported_by=args.user)
+
+    uploads: list[tuple[str, str, bytes]] = []
+    for raw_path in args.attach or []:
+        path = Path(raw_path)
+        if not path.is_file():
+            print(f"Attachment not found: {raw_path}", file=sys.stderr)
+            sys.exit(1)
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        uploads.append((path.name, content_type, path.read_bytes()))
+
+    report = service.submit(payload, reported_by=args.user, uploads=uploads)
 
     if args.json:
         _print_json(report)
@@ -567,6 +580,10 @@ async def cmd_bug_report(args) -> None:
     print(f"  Summary:  {report.summary}")
     print(f"  Severity: {report.severity}")
     print(f"  By:       {report.reported_by}")
+    if report.attachments:
+        print(f"  Attachments: {len(report.attachments)}")
+        for att in report.attachments:
+            print(f"    - {att.original_filename} ({att.size_bytes} bytes)")
 
 
 async def cmd_bug_list(args) -> None:
@@ -757,6 +774,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bug_report_p.add_argument("--feature", default="", help="Feature/page where the bug occurred")
     bug_report_p.add_argument("--user", default="cli", help="Reporter username (default: cli)")
+    bug_report_p.add_argument(
+        "--attach",
+        action="append",
+        metavar="PATH",
+        help="Path to a file to attach (repeatable, e.g. --attach a.png --attach b.log)",
+    )
     bug_report_p.add_argument("--json", action="store_true", help="Output raw JSON")
 
     bug_list_p = bug_sub.add_parser("list", help="List stored bug reports")

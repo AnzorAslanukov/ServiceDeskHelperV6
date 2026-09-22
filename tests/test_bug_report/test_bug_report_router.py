@@ -67,7 +67,7 @@ def _admin_cookie(bug_service: BugReportService) -> str:
 def test_submit_returns_id(client):
     resp = client.post(
         "/bug-report",
-        json={"summary": "Chat is broken", "description": "It never responds.", "severity": "high"},
+        data={"summary": "Chat is broken", "description": "It never responds.", "severity": "high"},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -76,8 +76,49 @@ def test_submit_returns_id(client):
 
 
 def test_submit_validation_error(client):
-    resp = client.post("/bug-report", json={"summary": "x", "description": "y"})
+    resp = client.post("/bug-report", data={"summary": "x", "description": "y"})
     assert resp.status_code == 422
+
+
+def test_submit_with_attachment(client, bug_service):
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    resp = client.post(
+        "/bug-report",
+        data={"summary": "Broken layout", "description": "See screenshot.", "severity": "low"},
+        files=[("files", ("shot.png", png, "image/png"))],
+    )
+    assert resp.status_code == 200
+    report = bug_service.get_report("BUG-1")
+    assert len(report.attachments) == 1
+    assert report.attachments[0].original_filename == "shot.png"
+
+
+def test_submit_rejects_disallowed_type(client):
+    resp = client.post(
+        "/bug-report",
+        data={"summary": "Bad file", "description": "Trying an exe.", "severity": "low"},
+        files=[("files", ("evil.exe", b"MZ\x90\x00", "application/octet-stream"))],
+    )
+    assert resp.status_code == 400
+    assert "not allowed" in resp.json()["detail"]
+
+
+def test_download_attachment_requires_admin(client, bug_service):
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    client.post(
+        "/bug-report",
+        data={"summary": "Broken layout", "description": "See screenshot.", "severity": "low"},
+        files=[("files", ("shot.png", png, "image/png"))],
+    )
+    att_id = bug_service.get_report("BUG-1").attachments[0].id
+    # No admin cookie → 403.
+    resp = client.get(f"/bug-report/BUG-1/attachments/{att_id}")
+    assert resp.status_code == 403
+    # With admin cookie → file bytes returned.
+    client.cookies.set(ADMIN_COOKIE, _admin_cookie(bug_service))
+    resp = client.get(f"/bug-report/BUG-1/attachments/{att_id}")
+    assert resp.status_code == 200
+    assert resp.content == png
 
 
 # ── GET /bug-report (list, admin only) ───────────────────────────────
@@ -91,7 +132,7 @@ def test_list_requires_admin(client):
 def test_list_with_admin_cookie(client, bug_service):
     client.post(
         "/bug-report",
-        json={"summary": "Something failed", "description": "Details here.", "severity": "low"},
+        data={"summary": "Something failed", "description": "Details here.", "severity": "low"},
     )
     client.cookies.set(ADMIN_COOKIE, _admin_cookie(bug_service))
     resp = client.get("/bug-report")
@@ -107,7 +148,7 @@ def test_list_with_admin_cookie(client, bug_service):
 def test_update_status(client, bug_service):
     client.post(
         "/bug-report",
-        json={"summary": "Fix me", "description": "Broken thing.", "severity": "medium"},
+        data={"summary": "Fix me", "description": "Broken thing.", "severity": "medium"},
     )
     client.cookies.set(ADMIN_COOKIE, _admin_cookie(bug_service))
     resp = client.patch("/bug-report/BUG-1/status", json={"status": "resolved"})
@@ -118,7 +159,7 @@ def test_update_status(client, bug_service):
 def test_update_status_invalid(client, bug_service):
     client.post(
         "/bug-report",
-        json={"summary": "Fix me", "description": "Broken thing.", "severity": "medium"},
+        data={"summary": "Fix me", "description": "Broken thing.", "severity": "medium"},
     )
     client.cookies.set(ADMIN_COOKIE, _admin_cookie(bug_service))
     resp = client.patch("/bug-report/BUG-1/status", json={"status": "banana"})
@@ -128,7 +169,7 @@ def test_update_status_invalid(client, bug_service):
 def test_delete_report(client, bug_service):
     client.post(
         "/bug-report",
-        json={"summary": "Delete me", "description": "Remove this.", "severity": "low"},
+        data={"summary": "Delete me", "description": "Remove this.", "severity": "low"},
     )
     client.cookies.set(ADMIN_COOKIE, _admin_cookie(bug_service))
     resp = client.request("DELETE", "/bug-report/BUG-1")

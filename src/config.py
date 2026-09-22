@@ -70,6 +70,18 @@ class Settings(BaseSettings):
     bug_report_admin_unlock_hours: float = Field(
         default=8.0, alias="BUG_REPORT_ADMIN_UNLOCK_HOURS"
     )
+    # Attachment limits (industry-standard defaults). Reporters may attach a
+    # handful of screenshots, logs, or short screen recordings to a report.
+    bug_report_max_files: int = Field(default=5, alias="BUG_REPORT_MAX_FILES")
+    bug_report_max_file_mb: float = Field(default=10.0, alias="BUG_REPORT_MAX_FILE_MB")
+    bug_report_max_total_mb: float = Field(
+        default=25.0, alias="BUG_REPORT_MAX_TOTAL_MB"
+    )
+    # Comma-separated allow-list of file extensions (no leading dot).
+    bug_report_allowed_extensions: str = Field(
+        default="png,jpg,jpeg,gif,webp,pdf,txt,log,csv,mp4,webm",
+        alias="BUG_REPORT_ALLOWED_EXTENSIONS",
+    )
 
     model_config = {
         "env_file": ".env",
