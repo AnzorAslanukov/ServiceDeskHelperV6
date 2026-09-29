@@ -1,0 +1,59 @@
+# =============================================================================
+# Service Desk Helper - Caddy reverse proxy
+# =============================================================================
+# Purpose: expose SDH on PORT 80 for clients on the restrictive VPN that only
+# permits port 80, by forwarding to the uvicorn app on 127.0.0.1:8000. uvicorn
+# is left exactly as-is (still bound 0.0.0.0:8000); this proxy sits in front.
+#
+# Listening on ":80" (a bare port, no hostname) tells Caddy to serve PLAIN HTTP
+# and DISABLES Caddy's automatic HTTPS (there is no domain/cert, and the VPN
+# blocks 443 anyway). This is intentional for an internal, VPN-only app.
+#
+# NOTE: Caddy binds the socket via Winsock. On this Windows server, port 80 is
+# currently reserved by HTTP.sys (System/PID 4), so Caddy will fail to bind with
+# WinError 10013 until the elevated steps in deploy/CADDY_RUNBOOK.md free port
+# 80. This file is correct regardless; it just cannot START until 80 is free.
+# =============================================================================
+
+{
+	# Global options.
+	# Turn off the admin API endpoint (we don't drive Caddy over HTTP; the
+	# self-healing launcher just runs `caddy run`). One less listener/attack
+	# surface on the box.
+	admin off
+	# Belt-and-suspenders: never try to provision certificates.
+	auto_https off
+}
+
+# Serve plain HTTP on port 80, all hostnames / the bare IP (10.192.46.182).
+:80 {
+	# Forward everything to the local uvicorn app.
+	#
+	# WebSockets (Feature #4 bulk-assignment live sync) are proxied
+	# AUTOMATICALLY by Caddy -- it detects the Upgrade/Connection headers and
+	# switches to a bidirectional stream; no extra directive is required.
+	reverse_proxy 127.0.0.1:8000 {
+		# Streaming / Server-Sent Events (the chatbot's /chat/stream endpoint):
+		# flush_interval -1 disables response buffering so tokens are flushed to
+		# the browser as they arrive instead of being held back by the proxy.
+		flush_interval -1
+
+		# Preserve the original Host header so the app's relative redirects
+		# (/, /ui/search, /login) and cookies keep working unchanged, and pass
+		# the real client IP for the app's logs.
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Access log to a file so the proxy tier is debuggable independently of
+	# uvicorn's own logs\server.log. logs\ is gitignored.
+	log {
+		output file "C:\projects\service_desk_helper\logs\caddy_access.log" {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format console
+	}
+}

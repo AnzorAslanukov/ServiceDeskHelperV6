@@ -60,3 +60,7 @@ cookies.txt
 data/bug_reports/
 
 misc/
+
+# Caddy reverse proxy binary (downloaded on the server via deploy/get_caddy.ps1;
+# ~40MB, platform-specific -- not source). The Caddyfile IS tracked.
+deploy/caddy/caddy.exe
