@@ -40,11 +40,10 @@
 
 		# Preserve the original Host header so the app's relative redirects
 		# (/, /ui/search, /login) and cookies keep working unchanged, and pass
-		# the real client IP for the app's logs.
+		# the real client IP for the app's logs. (Caddy already forwards
+		# X-Forwarded-For / X-Forwarded-Proto by default, so we don't set those.)
 		header_up Host {host}
 		header_up X-Real-IP {remote_host}
-		header_up X-Forwarded-For {remote_host}
-		header_up X-Forwarded-Proto {scheme}
 	}
 
 	# Access log to a file so the proxy tier is debuggable independently of
