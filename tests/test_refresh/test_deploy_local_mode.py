@@ -168,3 +168,55 @@ def test_local_gate_yes_runs_the_status_scan(monkeypatch):
     deploy.deploy_local()
     # The scan runs exactly once now that the gate said YES.
     assert sum(1 for c in streamed if "--status" in c) == 1
+
+
+# ── teardown_caddy_proxy: retire the GlobalProtect VPN reverse-proxy workaround ─
+
+def test_teardown_caddy_proxy_removes_task_process_and_firewall_rule(monkeypatch):
+    """The teardown must stop+delete the SDH_Caddy task, kill caddy.exe, and
+    remove the firewall rule — all over a single best-effort ssh() call."""
+    sent = []
+    monkeypatch.setattr(deploy, "ssh", lambda cmd: (sent.append(cmd), (True, ""))[1])
+    deploy.teardown_caddy_proxy()
+    assert len(sent) == 1
+    cmd = sent[0]
+    assert f"schtasks /End /TN {deploy.CADDY_TASK}" in cmd
+    assert f"schtasks /Delete /TN {deploy.CADDY_TASK} /F" in cmd
+    assert "Get-Process caddy" in cmd and "Stop-Process -Force" in cmd
+    assert f"Remove-NetFirewallRule -DisplayName '{deploy.CADDY_FIREWALL_RULE}'" in cmd
+    # Guarded so a missing task/process/rule is never an error.
+    assert "SilentlyContinue" in cmd
+
+
+def test_deploy_remote_tears_down_caddy_proxy_and_is_best_effort(monkeypatch):
+    """deploy_remote() must invoke the teardown, and a teardown failure must NOT
+    abort the deploy or add to the error list (it is best-effort cleanup)."""
+    # Neutralize every I/O boundary / step deploy_remote() touches so only the
+    # teardown wiring is exercised. run_local/ssh return success no-ops; the
+    # health poll and embeddings prompts are stubbed to the fast path.
+    monkeypatch.setattr(deploy, "step", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "info", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "success", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "error", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "run_local", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(deploy, "run_local_streaming", lambda *a, **k: True)
+    monkeypatch.setattr(deploy, "ssh", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(deploy, "prompt_yes_no", lambda *a, **k: False)  # code-only
+    monkeypatch.setattr(deploy.time, "sleep", lambda *_a, **_k: None)
+    # deploy_remote()'s own step-9 verify loop calls urllib.request.urlopen
+    # directly (not poll_health), so stub that to a 200 so it returns at once.
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda url, timeout=10: _Resp(200))
+
+    called = {"n": 0}
+
+    def _boom():
+        called["n"] += 1
+        raise RuntimeError("ssh unreachable")
+
+    monkeypatch.setattr(deploy, "teardown_caddy_proxy", _boom)
+
+    # Must not raise even though the teardown blows up.
+    deploy.deploy_remote()
+    assert called["n"] == 1

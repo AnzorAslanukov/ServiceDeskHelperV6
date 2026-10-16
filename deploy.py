@@ -16,23 +16,29 @@ option lets you run SDH on the machine you are sitting at. Answer:
 
 Steps performed (REMOTE mode):
   1. Git push local changes to GitHub
-  2. SSH to workstation → git pull
-  3. Install any new dependencies
-  4. (Optional) Update ticket embeddings on the server — a GATE prompt asks up
+  2. Remove the retired Caddy reverse proxy. A port-80 Caddy proxy was once
+     stood up as a workaround for the GlobalProtect VPN blocking the app's
+     non-standard port 8000; per ticket SR10765948 the VPN now allows reaching
+     10.192.46.182:8000 directly, so the proxy is decommissioned. This stops +
+     deletes the SDH_Caddy scheduled task, kills any caddy.exe, and removes the
+     "SDH Caddy HTTP 80" firewall rule — idempotent and a no-op if already gone.
+  3. SSH to workstation → git pull
+  4. Install any new dependencies
+  5. (Optional) Update ticket embeddings on the server — a GATE prompt asks up
      front whether to touch embeddings at all; answering NO does a code-only
      deploy and SKIPS the multi-minute "how many tickets to embed" scan. If YES,
      the scan runs (for an informed count/estimate) and a second prompt confirms.
      The ~3.1 GB file is then rebuilt locally and TRANSFERRED via SCP (never
      GitHub) to *.tmp paths. A live transfer progress bar is shown. The atomic
-     swap is DEFERRED to step 6 (after the server is stopped) — see note below.
-  5. Stop the running server
-  6. Apply the transferred embeddings: atomically swap the *.tmp files into
+     swap is DEFERRED to step 7 (after the server is stopped) — see note below.
+  6. Stop the running server
+  7. Apply the transferred embeddings: atomically swap the *.tmp files into
      place. This happens WHILE THE SERVER IS DOWN on purpose: the running
      server mmaps ticket_embeddings.npy, and Windows refuses to rename a
      memory-mapped file (WinError 32). Swapping after the stop removes that
      lock so the swap succeeds; the next start then loads the new file.
-  7. Start the server (detached)
-  8. Verify the server is responding
+  8. Start the server (detached)
+  9. Verify the server is responding
 """
 
 import os
@@ -64,6 +70,16 @@ SSH_OPTS = "-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no"
 DEPLOY_TASK = "SDH_Deploy"
 RUN_SERVER_CMD = f"{PROJECT_DIR}\\deploy\\run_server.cmd"
 SERVER_LOG = f"{PROJECT_DIR}\\logs\\server.log"
+
+# Name of the retired Caddy reverse-proxy scheduled task and firewall rule left
+# on the production workstation by the old port-80 VPN workaround. GlobalProtect
+# now permits reaching the app directly on TCP/8000 (ticket SR10765948 — Security
+# Engineering confirmed traffic to 10.192.46.182 is allowed over the new VPN from
+# a managed corp machine), so the proxy is decommissioned. deploy_remote() tears
+# these down idempotently every deploy so the box is left serving uvicorn on :8000
+# only, exactly as it was before the proxy was ever added.
+CADDY_TASK = "SDH_Caddy"
+CADDY_FIREWALL_RULE = "SDH Caddy HTTP 80"
 
 # How long to wait for the server to answer its health check after a start.
 # A cold start imports numpy/scikit-learn and memory-maps the multi-GB ticket
@@ -706,6 +722,37 @@ def _remote_live_matches_manifest():
     return ok and "LIVE_MATCH" in out
 
 
+def teardown_caddy_proxy():
+    """
+    Idempotently remove the retired Caddy reverse proxy from the remote server.
+
+    Background: a Caddy reverse proxy (port 80 -> 127.0.0.1:8000) was temporarily
+    stood up as a workaround for the GlobalProtect VPN blocking the app's
+    non-standard port 8000. Per ticket SR10765948, Security Engineering has since
+    allowed traffic to 10.192.46.182 over the new VPN, so the proxy is no longer
+    needed and the app is reached directly on http://10.192.46.182:8000 again.
+
+    This undoes the server-side artifacts the proxy left behind — none of which
+    live in the repo, so deleting the Caddy files alone would not remove them:
+      * the ``SDH_Caddy`` scheduled task (stop + delete),
+      * any running ``caddy.exe`` process (stop),
+      * the ``SDH Caddy HTTP 80`` inbound firewall rule (remove).
+
+    Every command is best-effort and SILENTLY no-ops if the artifact is already
+    gone (``-ErrorAction SilentlyContinue`` / ``2>$null``), so this is safe to run
+    on every deploy and on a box that never had the proxy. uvicorn on :8000 is
+    never touched here. Returns None; failures are not treated as deploy errors.
+    """
+    # Stop + delete the scheduled task (End first in case it is mid-run), kill any
+    # live caddy.exe, then drop the firewall rule. All guarded so a missing task /
+    # process / rule is not an error.
+    ssh(f"schtasks /End /TN {CADDY_TASK} 2>$null; "
+        f"schtasks /Delete /TN {CADDY_TASK} /F 2>$null; "
+        f"Get-Process caddy -ErrorAction SilentlyContinue | Stop-Process -Force; "
+        f"Remove-NetFirewallRule -DisplayName '{CADDY_FIREWALL_RULE}' "
+        f"-ErrorAction SilentlyContinue")
+
+
 # ── Main Deploy Flow ───────────────────────────────────────────────────
 
 def poll_health(url, timeout_seconds=HEALTH_TIMEOUT_SECONDS,
@@ -806,7 +853,7 @@ def main():
 
 
 def deploy_remote():
-    total_steps = 8
+    total_steps = 9
     errors = []
     # Whether stage_embeddings() left *.tmp files that still need to be swapped
     # into place. The swap itself is deferred to step 6 (after the server stop)
@@ -837,8 +884,20 @@ def deploy_remote():
         error("Git push failed — do you have uncommitted changes or conflicts?")
         errors.append("git push")
 
-    # Step 2: Force-sync server to match GitHub (workstation is deploy-only)
-    step(2, total_steps, "Syncing workstation code to GitHub (force reset)")
+    # Step 2: Remove the retired Caddy reverse proxy (GlobalProtect VPN
+    # workaround). Per ticket SR10765948 the VPN now allows reaching the app
+    # directly on :8000, so the port-80 proxy is decommissioned. This is
+    # idempotent and a no-op if the proxy was never set up or is already gone.
+    step(2, total_steps, "Removing retired Caddy reverse proxy (VPN workaround)")
+    try:
+        teardown_caddy_proxy()
+        success("Caddy proxy torn down (task, process, firewall rule) — "
+                "app served directly on :8000")
+    except Exception as e:  # noqa: BLE001 - teardown is best-effort, never fatal
+        info(f"(Caddy teardown had no effect or could not run: {e})")
+
+    # Step 3: Force-sync server to match GitHub (workstation is deploy-only)
+    step(3, total_steps, "Syncing workstation code to GitHub (force reset)")
     ssh(f"Set-Location '{PROJECT_DIR}'; git fetch origin master")
     ok, _ = ssh(f"Set-Location '{PROJECT_DIR}'; git reset --hard origin/master")
     if ok:
@@ -847,16 +906,16 @@ def deploy_remote():
         error("Git reset failed on workstation")
         errors.append("git sync")
 
-    # Step 3: Install dependencies
-    step(3, total_steps, "Installing dependencies")
+    # Step 4: Install dependencies
+    step(4, total_steps, "Installing dependencies")
     ok, _ = ssh(f"Set-Location '{PROJECT_DIR}'; python -m pip install -r requirements.txt --quiet")
     success("Dependencies up to date")
 
-    # Step 4: Optionally update ticket embeddings (prompted).
+    # Step 5: Optionally update ticket embeddings (prompted).
     # This only REBUILDS + TRANSFERS the files (to *.tmp). The atomic swap is
-    # deferred to step 6 (after the server is stopped) so Windows will let us
+    # deferred to step 7 (after the server is stopped) so Windows will let us
     # replace the no-longer-mmapped live .npy.
-    step(4, total_steps, "Updating ticket embeddings (optional)")
+    step(5, total_steps, "Updating ticket embeddings (optional)")
     # GATE (before the slow scan): the --status check below can take a few
     # minutes (it spins up a cold Databricks warehouse). Ask up front whether the
     # operator even wants to touch embeddings this deploy, so a code-only deploy
@@ -906,20 +965,20 @@ def deploy_remote():
     else:
         info("Skipping embeddings update (code-only deploy)")
 
-    # Step 5: Stop the running server by force-killing python. The server runs as
+    # Step 6: Stop the running server by force-killing python. The server runs as
     # a plain `python -m uvicorn` process here, so this both stops it and releases
-    # the memory-mapped embeddings file so the step 6 atomic swap can rename it
+    # the memory-mapped embeddings file so the step 7 atomic swap can rename it
     # without hitting WinError 32 ("file in use").
-    step(5, total_steps, "Stopping current server")
+    step(6, total_steps, "Stopping current server")
     ssh("Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force")
     success("Server stopped")
     time.sleep(2)
 
-    # Step 6: Apply staged embeddings (atomic swap) — WHILE THE SERVER IS DOWN.
+    # Step 7: Apply staged embeddings (atomic swap) — WHILE THE SERVER IS DOWN.
     # The live .npy is no longer memory-mapped now, so os.replace can rename it
     # (this is the fix for the WinError 32 "file in use" swap failure that
     # happened when the swap ran before the stop).
-    step(6, total_steps, "Applying new embeddings (atomic swap)")
+    step(7, total_steps, "Applying new embeddings (atomic swap)")
     if swap_pending:
         try:
             if apply_embeddings():
@@ -933,13 +992,13 @@ def deploy_remote():
     else:
         info("No embeddings to apply (skipped, unchanged, or staging failed)")
 
-    # Step 7: Start the server detached via the Task Scheduler (schtasks.exe).
+    # Step 8: Start the server detached via the Task Scheduler (schtasks.exe).
     # We (re)create a ONCE task whose action is the committed run_server.cmd, then
     # trigger it with /Run. The task runs under the Task Scheduler service, so the
     # uvicorn process keeps running after this SSH session closes — unlike the old
     # `start /b ssh ... > nul` launch (silent, didn't survive) and unlike a plain
     # remote Start-Process (the child was killed when the SSH session ended).
-    step(7, total_steps, "Starting server (scheduled task via schtasks)")
+    step(8, total_steps, "Starting server (scheduled task via schtasks)")
     # /Create with /F is idempotent — it refreshes the action each deploy in case
     # run_server.cmd's path or contents changed. /ST is a required-but-unused time
     # for a ONCE task; schtasks may warn it is in the past, which is harmless
@@ -958,11 +1017,11 @@ def deploy_remote():
               "can create/run scheduled tasks and deploy/run_server.cmd exists")
         errors.append("server start")
 
-    # Step 8: Verify by polling the health endpoint until it answers or we time
+    # Step 9: Verify by polling the health endpoint until it answers or we time
     # out. A single fixed sleep was too short for a cold start (numpy/scikit-learn
     # import + mmap of the multi-GB embeddings file), which made healthy starts
     # look like failures. Polling succeeds as soon as the port is bound.
-    step(8, total_steps, "Verifying server is responding")
+    step(9, total_steps, "Verifying server is responding")
     info(f"Polling {SERVER_URL} for up to {HEALTH_TIMEOUT_SECONDS}s...")
 
     import urllib.request
