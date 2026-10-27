@@ -110,6 +110,15 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 The web UI will be available at `http://localhost:8000/ui/`.
 
+> **Windows production note:** when running **without** `--reload` (e.g. the
+> production server launched by `deploy/run_server.cmd`), add
+> `--loop asyncio:SelectorEventLoop`. In single-process mode on Windows,
+> uvicorn otherwise uses the `ProactorEventLoop`, whose accept loop can die with
+> `WinError 64 ("the specified network name is no longer available")` when a
+> client/load-balancer connection drops abruptly — leaving the listener dead on
+> :8000 while the process stays alive. `--reload` already forces the
+> SelectorEventLoop, so the dev command above is unaffected.
+
 ### Deploying (`deploy.py`)
 
 Running `deploy.py` (double-click or `python deploy.py`) first asks **one**

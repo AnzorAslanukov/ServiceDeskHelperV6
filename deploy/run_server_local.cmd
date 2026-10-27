@@ -18,4 +18,8 @@ title Service Desk Helper (LOCAL) - http://localhost:8000
 echo Starting Service Desk Helper locally on http://localhost:8000 ...
 echo Logs: %PROJECT_DIR%\logs\server.log
 echo Close this window to stop the server.
-python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > "%PROJECT_DIR%\logs\server.log" 2>&1
+REM --loop asyncio:SelectorEventLoop: on Windows, uvicorn's single-process default
+REM is the ProactorEventLoop, whose IOCP accept() loop can die with "WinError 64"
+REM when a client connection drops abruptly, leaving the listener dead on :8000.
+REM The SelectorEventLoop avoids that failure. See deploy\run_server.cmd header.
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --loop asyncio:SelectorEventLoop > "%PROJECT_DIR%\logs\server.log" 2>&1

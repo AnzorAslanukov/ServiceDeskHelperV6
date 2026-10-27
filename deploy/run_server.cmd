@@ -7,11 +7,20 @@ REM runs detached from the SSH session and survives disconnect. All quoting
 REM stays inside this file to avoid the shell-escaping problems of passing a
 REM full command line through SSH.
 REM
-REM SELF-HEALING: uvicorn is run inside a restart loop. If uvicorn ever exits --
-REM including the Windows ProactorEventLoop "WinError 64 (network name no longer
-REM available)" listener-death that previously left a zombie process bound to
-REM nothing on :8000 -- this script logs the exit, waits briefly, and relaunches
-REM it. The process therefore never silently goes dead; it comes back on its own.
+REM EVENT LOOP FIX: uvicorn is launched with "--loop asyncio:SelectorEventLoop".
+REM In single-process mode on Windows, uvicorn otherwise defaults to the asyncio
+REM ProactorEventLoop, whose IOCP accept() loop can die with "WinError 64 (the
+REM specified network name is no longer available)" when a client (e.g. the load
+REM balancer's TCP health probe) drops a connection abruptly -- the listener then
+REM stops accepting on :8000 while the process stays alive (a zombie bound to
+REM nothing). The SelectorEventLoop does not hit that IOCP failure, so the
+REM listener survives. See uvicorn docs (concepts/event-loop) + cpython#122240.
+REM
+REM SELF-HEALING (fallback): uvicorn is still run inside a restart loop as a
+REM belt-and-suspenders safety net. If uvicorn ever exits for ANY reason, this
+REM script logs the exit, waits briefly, and relaunches it. With the Selector
+REM loop in place this should now rarely fire, but it guarantees the server
+REM never silently stays dead -- it always comes back on its own.
 REM
 REM STATUS DISPLAY: uvicorn's own stdout/stderr is redirected to logs\server.log
 REM (so this window stays quiet). To show that it is alive WITHOUT spamming new
@@ -61,7 +70,7 @@ call :status "RUNNING since %date% %time%  (start #!RUNS!)  -- serving %URL%"
 
 REM Foreground launch so we can detect the exit. Output goes to the log, so the
 REM window itself stays on the single status line above.
-"%PYTHON%" -m uvicorn src.main:app --host 0.0.0.0 --port 8000 >> "%LOG%" 2>&1
+"%PYTHON%" -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --loop asyncio:SelectorEventLoop >> "%LOG%" 2>&1
 
 REM If we get here, uvicorn exited (crash, killed, or WinError 64 socket death).
 set "EXITCODE=!ERRORLEVEL!"
